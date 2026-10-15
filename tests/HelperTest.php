@@ -1,0 +1,70 @@
+<?php
+
+use PHPUnit\Framework\TestCase;
+use WHMCS\Module\Registrar\Skrime\Helper;
+use WHMCS\Module\Registrar\Skrime\Pricelist;
+use WHMCS\Module\Registrar\Skrime\Settings;
+
+class HelperTest extends TestCase
+{
+    public function testStreetAndNumber()
+    {
+        $this->assertSame(['Musterstraße', '1a'], Helper::extractStreetAndNumber('Musterstraße 1a'));
+        $this->assertSame(['Hauptweg', ''], Helper::extractStreetAndNumber('Hauptweg'));
+    }
+
+    public function testOrderNameserversAreFilledWithDefaults()
+    {
+        $settings = new Settings(['defaultNameservers' => 'ns1.default.tld, ns2.default.tld']);
+        $this->assertSame(['ns.custom.tld', 'ns1.default.tld'], Helper::orderNameservers(['ns1' => 'NS.custom.tld', 'ns2' => ''], $settings));
+
+        $settings = new Settings(['defaultNameservers' => 'ns1.default.tld,ns2.default.tld', 'forceDefaultNameservers' => 'on']);
+        $this->assertSame(['ns1.default.tld', 'ns2.default.tld'], Helper::orderNameservers(['ns1' => 'a.tld', 'ns2' => 'b.tld'], $settings));
+    }
+
+    public function testSplitDomain()
+    {
+        $this->assertSame(['example', 'co.uk'], Helper::splitDomain('example.co.uk', ['uk', 'co.uk']));
+        $this->assertSame(['example', 'de'], Helper::splitDomain('example.de'));
+    }
+
+    public function testProductHelpers()
+    {
+        $product = ['productInfo' => ['domain' => 'Example.DE'], 'price' => '7.00', 'duration' => '24', 'priceBeforeDiscount' => '8.00', 'state' => 'active'];
+        $this->assertSame('example.de', Helper::productDomain($product));
+        $this->assertEqualsWithDelta(3.5, Helper::productYearlyCost($product), 0.0001);
+        $this->assertEqualsWithDelta(4.0, Helper::productYearlyCost($product, 'priceBeforeDiscount'), 0.0001);
+        $this->assertSame([$product], Helper::productList([$product, ['foo' => 'bar']]));
+        $this->assertSame('active', Helper::productStatus($product));
+        $this->assertSame('cancelled', Helper::productStatus(['state' => 'deleted']));
+        $this->assertSame('expired', Helper::productStatus(['state' => 'expired']));
+    }
+
+    public function testPrivacyPayload()
+    {
+        $settings = new Settings(['privacyFields' => 'email,name']);
+        $payload = Helper::privacyPayload(true, $settings);
+        $this->assertTrue($payload['email']);
+        $this->assertTrue($payload['name']);
+        $this->assertFalse($payload['city']);
+        $this->assertSame(array_fill_keys(Helper::PRIVACY_FIELDS, false), Helper::privacyPayload(false, $settings));
+    }
+
+    public function testPricelistOfferHandling()
+    {
+        $list = Pricelist::normalize([
+            ['tld' => '.CO.UK', 'create' => '1.00', 'renew' => '6.00', 'transfer' => '6.00', 'restore' => '30.00', 'offer' => true, 'offerTypes' => ['create']],
+        ]);
+        $entry = $list['co.uk'];
+
+        $costs = Pricelist::effectiveCosts($entry, new Settings(['offerMode' => 'apply']));
+        $this->assertEqualsWithDelta(1.0, $costs['register'], 0.0001);
+
+        $costs = Pricelist::effectiveCosts($entry, new Settings(['offerMode' => 'regular']));
+        $this->assertEqualsWithDelta(6.0, $costs['register'], 0.0001);
+
+        $costs = Pricelist::effectiveCosts($entry, new Settings(['offerMode' => 'skip']));
+        $this->assertNull($costs['register']);
+        $this->assertEqualsWithDelta(6.0, $costs['renew'], 0.0001);
+    }
+}

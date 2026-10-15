@@ -1,47 +1,60 @@
 <?php
-/**
- * WHMCS Sample Registrar Module Test
- *
- * Sample PHPUnit test that asserts the fundamental requirements of a WHMCS
- * registrar module.
- *
- * This is by no means intended to be a complete test, and does not exercise any
- * of the actual functionality of the functions within the module. We strongly
- * recommend you implement further tests as appropriate for your module use
- * case.
- *
- * @copyright Copyright (c) WHMCS Limited 2017
- * @license http://www.whmcs.com/license/ WHMCS Eula
- */
 
-class  WHMCSSampleRegistrarModuleTest extends PHPUnit_Framework_TestCase
+use PHPUnit\Framework\TestCase;
+
+class WHMCSSampleRegistrarModuleTest extends TestCase
 {
-
-    public static function providerCoreFunctionNames()
+    public function testCoreModuleFunctionsExist()
     {
-        return array(
-            array('RegisterDomain'),
-            array('TransferDomain'),
-            array('RenewDomain'),
-            array('GetNameservers'),
-            array('SaveNameservers'),
-            array('GetContactDetails'),
-            array('SaveContactDetails'),
-        );
+        $functions = [
+            'MetaData',
+            'getConfigArray',
+            'config_validate',
+            'RegisterDomain',
+            'TransferDomain',
+            'RenewDomain',
+            'GetNameservers',
+            'SaveNameservers',
+            'GetContactDetails',
+            'SaveContactDetails',
+            'CheckAvailability',
+            'GetDNS',
+            'SaveDNS',
+            'IDProtectToggle',
+            'GetEPPCode',
+            'Sync',
+            'TransferSync',
+            'GetTldPricing',
+            'AdminCustomButtonArray',
+            'SyncDomainPrice',
+            'SyncAllDomainPrices',
+            'SyncTldPrices',
+            'ClientAreaCustomButtonArray',
+            'dnssec',
+        ];
+
+        foreach ($functions as $function) {
+            $this->assertTrue(function_exists('skrime_' . $function), 'skrime_' . $function);
+        }
     }
 
-    /**
-     * Test Core Module Functions Exist
-     *
-     * This test confirms that the functions we recommend for all registrar
-     * modules are defined for the sample module
-     *
-     * @param $moduleName
-     *
-     * @dataProvider providerCoreFunctionNames
-     */
-    public function testCoreModuleFunctionsExist($moduleName)
+    public function testAdminButtonsPointToExistingFunctions()
     {
-        $this->assertTrue(function_exists('skrime_' . $moduleName));
+        foreach (skrime_AdminCustomButtonArray() as $function) {
+            $this->assertTrue(function_exists('skrime_' . $function), 'skrime_' . $function);
+        }
+    }
+
+    public function testConfigArrayDefaultsAreValid()
+    {
+        $config = skrime_getConfigArray();
+        $this->assertSame('SKRIME', $config['FriendlyName']['Value']);
+        $this->assertArrayHasKey('apiKey', $config);
+
+        foreach ($config as $key => $definition) {
+            if (isset($definition['Type']) && $definition['Type'] === 'dropdown') {
+                $this->assertArrayHasKey($definition['Default'], $definition['Options'], $key);
+            }
+        }
     }
 }

@@ -1,15 +1,23 @@
 {
     "schema": "1.0",
     "type": "whmcs-registrars",
-    "name": "SRKIME",
+    "name": "SKRIME",
     "license": "MIT",
     "category": "registrar",
     "description": {
-        "name": "SRKIME",
+        "name": "SKRIME",
         "tagline": "Domain Register via SKRIME",
-        "long": "Domain Register via SKRIME",
+        "long": "Domain registration, transfer, renewal and management via SKRIME including automatic TLD and domain price synchronisation.",
         "features": [
-            "Domain Register via SKRIME"
+            "Domain registration, transfer and renewal",
+            "Nameserver, contact and DNS zone management",
+            "DNSSEC management in the client area",
+            "WHOIS privacy (ID protection)",
+            "Domain and transfer synchronisation",
+            "TLD pricing import",
+            "Automatic TLD price updates from the SKRIME pricelist",
+            "Automatic renewal price updates for existing domains based on the SKRIME product price",
+            "Admin dashboard widget and price change notifications"
         ]
     },
     "logo": {
