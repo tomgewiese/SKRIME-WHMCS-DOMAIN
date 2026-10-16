@@ -374,7 +374,14 @@ class DomainPriceSync
     {
         if ($this->pricelist === null) {
             if (self::$sharedPricelist === null) {
-                self::$sharedPricelist = Pricelist::fetch($this->api);
+                try {
+                    self::$sharedPricelist = Pricelist::fetch($this->api);
+                } catch (\Throwable $e) {
+                    if (!($e instanceof ApiException && $e->isTransportError())) {
+                        self::$sharedPricelist = [];
+                    }
+                    throw $e;
+                }
             }
             $this->pricelist = self::$sharedPricelist;
         }
