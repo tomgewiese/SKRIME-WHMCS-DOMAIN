@@ -92,12 +92,27 @@ function skrime_orderDomain(array $params, $authCode)
     $domain = Helper::domainName($params);
     $years = skrime_years($params);
     $isTransfer = (string) $authCode !== '';
-    if ($years > 1 && ($isTransfer || $settings->choice('multiYearMode') !== 'renew')) {
-        return ['error' => 'SKRIME ' . ($isTransfer ? 'transferiert' : 'registriert') . ' Domains je Vorgang für 1 Jahr. Die gewählte Laufzeit von ' . $years . ' Jahren wird nicht unterstützt (Einstellung "Mehrjährige Laufzeiten").'];
+    if ($years > 1 && $isTransfer) {
+        return ['error' => 'SKRIME transferiert Domains je Vorgang für 1 Jahr. Die gewählte Laufzeit von ' . $years . ' Jahren wird nicht unterstützt.'];
+    }
+    if ($years > 1 && $settings->choice('multiYearMode') !== 'renew') {
+        return ['error' => 'SKRIME registriert Domains je Vorgang für 1 Jahr. Die gewählte Laufzeit von ' . $years . ' Jahren wird nicht unterstützt (Einstellung "Mehrjährige Laufzeiten").'];
     }
     $nameservers = Helper::orderNameservers($params, $settings);
     if (count($nameservers) < 2) {
         return ['error' => 'Es werden mindestens 2 Nameserver benötigt. Bitte Standard-Nameserver in den Registrar-Einstellungen hinterlegen.'];
+    }
+
+    $api = Api::fromSettings($settings);
+    if (!$isTransfer && skrime_premiumBlocked($params, $settings)) {
+        try {
+            $check = $api->call('POST', 'domain/check', ['domain' => $domain]);
+        } catch (\Throwable $e) {
+            return skrime_error($e);
+        }
+        if (is_array($check) && !empty($check['premium'])) {
+            return ['error' => 'Die Domain ' . $domain . ' ist eine Premium-Domain und wird gemäß Einstellung "Premium-Domains" nicht registriert.'];
+        }
     }
 
     $postfields = [
@@ -110,7 +125,6 @@ function skrime_orderDomain(array $params, $authCode)
     ];
 
     try {
-        $api = Api::fromSettings($settings);
         $product = $api->call('POST', 'domain/order', $postfields);
     } catch (\Throwable $e) {
         return skrime_error($e);
@@ -315,6 +329,12 @@ function skrime_IDProtectToggle($params)
     }
 }
 
+function skrime_premiumBlocked(array $params, Settings $settings)
+{
+    return $settings->choice('premiumHandling') === 'unavailable'
+        || (array_key_exists('premiumEnabled', $params) && empty($params['premiumEnabled']));
+}
+
 function skrime_searchStatus($name, $fallback)
 {
     $constant = SearchResult::class . '::' . $name;
@@ -331,8 +351,7 @@ function skrime_CheckAvailability($params)
         : $searchTerm;
     $tlds = isset($params['tldsToInclude']) && is_array($params['tldsToInclude']) ? $params['tldsToInclude'] : [];
 
-    $premiumBlocked = $settings->choice('premiumHandling') === 'unavailable'
-        || (array_key_exists('premiumEnabled', $params) && empty($params['premiumEnabled']));
+    $premiumBlocked = skrime_premiumBlocked($params, $settings);
 
     try {
         $api = Api::fromSettings($settings);
@@ -464,7 +483,7 @@ function skrime_SaveDNS($params)
         $name = isset($record['hostname']) ? trim((string) $record['hostname']) : '';
         $name = $name === '' ? '@' : $name;
         $key = strtolower($name) . '|' . $address;
-        if (!empty($protected[$key])) {
+        if (!$settings->bool('dnsKeepUnsupported') && !empty($protected[$key])) {
             $records[] = array_shift($protected[$key]);
             continue;
         }
@@ -662,7 +681,7 @@ function skrime_GetTldPricing(array $params)
         return skrime_error($e);
     }
 
-    $maxYears = $settings->int('tldMaxYears', 1, 10);
+    $maxYears = $settings->choice('multiYearMode') === 'renew' ? $settings->int('tldMaxYears', 1, 10) : 1;
     $results = new ResultsList();
 
     foreach ($pricelist as $entry) {

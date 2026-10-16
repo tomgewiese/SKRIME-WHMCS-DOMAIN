@@ -145,14 +145,16 @@ class TldPriceSync
                     }
                     $old = $storedCosts === null ? null : $storedCosts[$type];
                     $run = $this->shouldRun($force, $trigger, $isNew, $stored === null, $initial, $old, $costs[$type]);
-                    if (!$run && $multiYear && $type !== 'renew' && $costs['renew'] !== null) {
+                    $logCosts = [$old, $costs[$type]];
+                    if (!$run && $multiYear && $type === 'register' && $costs['renew'] !== null) {
                         $oldRenew = $storedCosts === null ? null : $storedCosts['renew'];
                         $run = $this->shouldRun($force, $trigger, $isNew, $stored === null, $initial, $oldRenew, $costs['renew']);
+                        $logCosts = [$oldRenew, $costs['renew']];
                     }
                     if (!$run) {
                         continue;
                     }
-                    $this->applyType((int) $pricing->id, $tld, $type, $costs[$type], $costs['renew'], $old, $targets, $report);
+                    $this->applyType((int) $pricing->id, $tld, $type, $costs[$type], $costs['renew'], $logCosts, $targets, $report);
                 }
 
                 if ($restore && $costs['restore'] !== null) {
@@ -198,11 +200,12 @@ class TldPriceSync
         return abs((float) $old - (float) $new) >= 0.00005;
     }
 
-    private function applyType($relid, $tld, $type, $cost, $renewCost, $oldCost, array $targets, Report $report)
+    private function applyType($relid, $tld, $type, $cost, $renewCost, array $logCosts, array $targets, Report $report)
     {
         $priceType = self::PRICE_TYPES[$type];
-        $maxYears = $this->settings->int('tldMaxYears', 1, 10);
+        $maxYears = $type === 'transfer' ? 1 : $this->settings->int('tldMaxYears', 1, 10);
         $enableYears = $this->settings->bool('tldEnableYears');
+        list($oldCost, $newCost) = $logCosts;
 
         foreach ($targets as $currency) {
             $yearly = $this->calculator->yearlyPrice($cost, $type, $currency);
@@ -242,12 +245,11 @@ class TldPriceSync
                     'triennially' => 0,
                 ];
                 foreach (self::YEAR_COLUMNS as $years => $column) {
-                    $enabled = $type === 'transfer' ? $years === 1 : $years <= $maxYears;
-                    $price = $enabled ? $term($years) : null;
+                    $price = $years <= $maxYears ? $term($years) : null;
                     $insert[$column] = $price === null ? -1 : $price;
                 }
                 Capsule::table('tblpricing')->insert($insert);
-                $this->record($tld, $type, '1 Jahr (neu)', $currency, null, $yearly, $oldCost, $cost, $report);
+                $this->record($tld, $type, '1 Jahr (neu)', $currency, null, $yearly, $oldCost, $newCost, $report);
                 continue;
             }
 
@@ -255,6 +257,7 @@ class TldPriceSync
                 $update = [];
                 $oldFirst = null;
                 $newFirst = null;
+                $firstYears = null;
                 $disabled = 0;
                 foreach (self::YEAR_COLUMNS as $years => $column) {
                     $current = (float) $row->$column;
@@ -273,9 +276,10 @@ class TldPriceSync
                         continue;
                     }
                     $update[$column] = $new;
-                    if ($years === 1) {
+                    if ($firstYears === null) {
                         $oldFirst = $current < 0 ? null : $current;
                         $newFirst = $new;
+                        $firstYears = $years;
                     }
                 }
                 if (empty($update)) {
@@ -283,6 +287,9 @@ class TldPriceSync
                 }
                 Capsule::table('tblpricing')->where('id', $row->id)->update($update);
                 $detail = (count($update) - $disabled) . ' Laufzeit(en)';
+                if ($firstYears !== null && $firstYears > 1) {
+                    $detail .= ', Preis ab ' . $firstYears . ' Jahren';
+                }
                 if ($disabled > 0) {
                     $detail .= ', ' . $disabled . ' deaktiviert';
                 }
@@ -291,9 +298,9 @@ class TldPriceSync
                 }
                 if ($newFirst === null) {
                     $oldFirst = (float) $row->msetupfee < 0 ? null : (float) $row->msetupfee;
-                    $newFirst = isset($update['msetupfee']) ? $update['msetupfee'] : (float) $row->msetupfee;
+                    $newFirst = $oldFirst === null ? -1 : $oldFirst;
                 }
-                $this->record($tld, $type, $detail, $currency, $oldFirst, $newFirst, $oldCost, $cost, $report);
+                $this->record($tld, $type, $detail, $currency, $oldFirst, $newFirst, $oldCost, $newCost, $report);
             }
         }
     }

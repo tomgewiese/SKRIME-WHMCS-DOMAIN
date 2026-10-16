@@ -134,7 +134,7 @@ class Settings
                     'renew' => 'Weitere Jahre per Verlängerung buchen',
                 ],
                 'Default' => 'reject',
-                'Description' => 'Umgang mit Registrierungen, Transfers und Verlängerungen über mehr als 1 Jahr',
+                'Description' => 'Umgang mit Registrierungen und Verlängerungen über mehr als 1 Jahr. Transfers sind immer 1 Jahr',
             ],
             'idProtectionOnOrder' => [
                 'FriendlyName' => 'WHOIS-Privacy bei Bestellung',

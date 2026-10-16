@@ -42,10 +42,11 @@ class DomainPriceSync
         $report = new Report('Domain-Preisabgleich');
         $cursor = (int) Storage::get('domain_cursor', 0);
 
-        if ($cursor > 0 && (int) Storage::get('domain_force_pending', 0) === 1) {
+        if ((int) Storage::get('domain_force_pending', 0) === 1) {
             $force = true;
         }
 
+        $cycleStart = (int) Storage::get('domain_cycle_start', 0);
         if ($cursor === 0) {
             if (!$force && !Storage::isDue('domain_cycle_start', $this->settings->int('domainSyncInterval', 1, 8760))) {
                 return null;
@@ -87,6 +88,9 @@ class DomainPriceSync
                 if ($failures >= self::MAX_TRANSPORT_FAILURES) {
                     $report->error('SKRIME API nicht erreichbar, Abgleich wird beim nächsten Cron-Lauf fortgesetzt');
                     $cursor = (int) $streakStart;
+                    if ($cursor === 0) {
+                        Storage::set('domain_cycle_start', $cycleStart);
+                    }
                     $stopped = true;
                     break;
                 }
@@ -157,8 +161,7 @@ class DomainPriceSync
             $cursor = (int) Storage::get('domain_cursor', 0);
         } while ($cursor > 0 && time() - $started < $maxSeconds && empty($report->errors()));
 
-        $complete = (int) Storage::get('domain_cursor', 0) === 0;
-        Storage::set('domain_force_pending', $complete ? 0 : 1);
+        $complete = (int) Storage::get('domain_force_pending', 0) === 0;
 
         return [
             'changes' => $changes,
@@ -371,12 +374,7 @@ class DomainPriceSync
     {
         if ($this->pricelist === null) {
             if (self::$sharedPricelist === null) {
-                try {
-                    self::$sharedPricelist = Pricelist::fetch($this->api);
-                } catch (\Throwable $e) {
-                    self::$sharedPricelist = [];
-                    throw $e;
-                }
+                self::$sharedPricelist = Pricelist::fetch($this->api);
             }
             $this->pricelist = self::$sharedPricelist;
         }

@@ -20,7 +20,7 @@ class Cron
 
         try {
             Storage::ensureSchema();
-            $forcePending = (int) Storage::get('domain_force_pending', 0) === 1 && (int) Storage::get('domain_cursor', 0) > 0;
+            $forcePending = (int) Storage::get('domain_force_pending', 0) === 1;
             if (!Storage::acquireLock(self::LOCK, self::LOCK_TTL)) {
                 return;
             }

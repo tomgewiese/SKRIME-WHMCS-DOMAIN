@@ -11,6 +11,9 @@ class HelperTest extends TestCase
     {
         $this->assertSame(['Musterstraße', '1a'], Helper::extractStreetAndNumber('Musterstraße 1a'));
         $this->assertSame(['Hauptweg', ''], Helper::extractStreetAndNumber('Hauptweg'));
+        $this->assertSame(['Main Street', '123'], Helper::extractStreetAndNumber('123 Main Street'));
+        $this->assertSame(['Straße des 17. Juni', '135'], Helper::extractStreetAndNumber('Straße des 17. Juni 135'));
+        $this->assertSame(['Am Markt', '3-5'], Helper::extractStreetAndNumber('Am Markt 3-5'));
     }
 
     public function testContactFromDetailsKeepsStreetWhenNumberGiven()

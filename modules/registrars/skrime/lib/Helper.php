@@ -20,6 +20,12 @@ class Helper
     public static function extractStreetAndNumber($address)
     {
         $address = trim((string) $address);
+        if (preg_match('/^(\d+\s?[a-zA-Z]?(?:\s?[-\/]\s?\d+\s?[a-zA-Z]?)?),?\s+(\D.*)$/u', $address, $matches)) {
+            return [trim($matches[2]), trim($matches[1])];
+        }
+        if (preg_match('/^(.*?\D)\s*(\d+\s*[a-zA-Z]?(?:\s*[-\/]\s*\d+\s*[a-zA-Z]?)?)$/u', $address, $matches)) {
+            return [trim($matches[1]), trim($matches[2])];
+        }
         if (preg_match('/^(.+?)\s?(\d+.*)$/u', $address, $matches)) {
             return [trim($matches[1]), trim($matches[2])];
         }
@@ -75,6 +81,8 @@ class Helper
         list($street, $number) = self::extractStreetAndNumber($address1);
         if ($number === '' && $address2 !== '' && preg_match('/^\d/', $address2)) {
             $number = $address2;
+        } elseif ($address2 !== '') {
+            $street = trim($street . ', ' . $address2, ', ');
         }
 
         $company = isset($params['companyname']) ? (string) $params['companyname'] : '';

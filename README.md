@@ -38,7 +38,7 @@ This module allows the integration of SKRIME's domain registration service into 
 - Your API key is kept. The automatic price updates (TLD-Sync, Domain-Sync) stay disabled until you enable them.
 - Active by default and configurable: DNSSEC in the client area, WHOIS privacy after ordering (only if ID protection was booked), premium domains shown as unavailable, protection of DNS records WHMCS cannot display, company name cleaning on orders, the dashboard widget.
 - Always active: transfer synchronisation and the status synchronisation (expired/cancelled/transferred).
-- Multi-year registrations, transfers and renewals are rejected with an error by default, because SKRIME registers and renews one year per request. Set "Mehrjährige Laufzeiten" to "Weitere Jahre per Verlängerung buchen" to book additional years via renewals.
+- Multi-year registrations and renewals are rejected with an error by default, because SKRIME registers and renews one year per request. Set "Mehrjährige Laufzeiten" to "Weitere Jahre per Verlängerung buchen" to book additional years via renewals. Transfers are always one year.
 
 ## Features
 
@@ -53,7 +53,7 @@ This module allows the integration of SKRIME's domain registration service into 
 - **EPP Code:** Retrieve the auth code.
 - **Availability Check:** Supports multiple TLDs per search and premium domain handling.
 - **Domain Sync & Transfer Sync:** Expiry date and status synchronisation, completion of incoming transfers.
-- **TLD Pricing Import:** WHMCS TLD & pricing sync (Utilities > Registrar TLD Sync).
+- **TLD Pricing Import:** WHMCS TLD & pricing sync (Utilities > Registrar TLD Sync). Imports one-year terms unless multi-year terms are booked via renewals.
 - **Automatic TLD Price Update:** Updates register, transfer, renewal and optionally redemption prices from the SKRIME pricelist.
 - **Automatic Domain Price Update:** Updates the recurring amount of existing domains when the price of the individual SKRIME product (the domain) changes.
 - **Admin Tools:** Admin buttons on the domain page, a dashboard widget, a price change log and admin/client notifications.
@@ -79,7 +79,7 @@ Updates `domainregister`, `domaintransfer` and `domainrenew` pricing of your TLD
 - Scope: only TLDs with SKRIME as auto registrar, all existing TLDs, or all TLDs including automatic creation of missing ones.
 - Trigger: only when the SKRIME price changed (manual changes stay until the next SKRIME price change) or enforce on every run.
 - Include/exclude lists, client group pricing stays untouched unless enabled.
-- Maximum term (default 1 year): terms above it are disabled. Disabled terms (`-1`) up to the maximum stay disabled unless enabled. Multi-year register and transfer prices are calculated as first year plus renewal price for every further year.
+- Maximum term (default 1 year): terms above it are disabled. Disabled terms (`-1`) up to the maximum stay disabled unless enabled. Multi-year register prices are calculated as first year plus renewal price for every further year. Transfer prices are maintained for one year only.
 - A failed pricelist download is retried after 15 minutes.
 - Offers (`offer` in the pricelist): apply the offer price, use the regular renewal price as basis, or do not change the affected prices.
 
@@ -123,8 +123,8 @@ All price changes are written to the table `mod_skrime_price_log` and shown in t
 | Verbindung beim Speichern prüfen | Validate the API key when saving |
 | Standard-Nameserver / erzwingen | Default nameservers for registrations and transfers |
 | Firmennamen bereinigen | Remove parentheses and Ä/Ö/Ü from company names on orders |
-| Premium-Domains | Show premium domains as unavailable or offer them at the regular TLD price |
-| Mehrjährige Laufzeiten | Reject terms above 1 year or book further years via renewals |
+| Premium-Domains | Show premium domains as unavailable (registrations of premium domains are refused) or offer them at the regular TLD price |
+| Mehrjährige Laufzeiten | Reject registration/renewal terms above 1 year or book further years via renewals |
 | WHOIS-Privacy bei Bestellung / Felder | WHOIS privacy after ordering and the fields to hide |
 | Sync: Fehlende Domains kündigen | Mark domains missing at SKRIME as cancelled |
 | DNS: MX/SRV-Priorität | Send the priority inside the data field or as separate field |
