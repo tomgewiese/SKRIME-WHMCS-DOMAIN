@@ -341,11 +341,14 @@ class DomainPriceSync
         }
         $this->products = [];
         try {
-            foreach (Helper::productList($this->api->call('GET', 'domain/all')) as $product) {
+            foreach (Helper::productList($this->api->call('GET', 'product/all', ['type' => 'domain'])) as $product) {
+                if (isset($product['type']) && strtolower((string) $product['type']) !== 'domain') {
+                    continue;
+                }
                 $this->products[Helper::productDomain($product)] = $product;
             }
         } catch (\Throwable $e) {
-            $report->error('domain/all: ' . $e->getMessage());
+            $report->error('product/all: ' . $e->getMessage());
         }
     }
 
@@ -355,7 +358,7 @@ class DomainPriceSync
             return $this->products[$domain];
         }
         try {
-            $data = $this->api->call('GET', 'domain/single', ['domain' => $domain]);
+            $data = $this->api->call('GET', 'product/single', ['domain' => $domain]);
         } catch (ApiException $e) {
             if ($e->isNotFound()) {
                 return null;

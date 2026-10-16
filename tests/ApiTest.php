@@ -28,7 +28,7 @@ class ApiTest extends TestCase
         });
 
         try {
-            $api->call('GET', 'domain/single', ['domain' => 'example.de']);
+            $api->call('GET', 'product/single', ['domain' => 'example.de']);
             $this->fail('Exception expected');
         } catch (ApiException $e) {
             $this->assertTrue($e->isNotFound());
@@ -40,7 +40,7 @@ class ApiTest extends TestCase
         });
 
         try {
-            $api->call('GET', 'domain/single', ['domain' => 'example.de']);
+            $api->call('GET', 'product/single', ['domain' => 'example.de']);
             $this->fail('Exception expected');
         } catch (ApiException $e) {
             $this->assertTrue($e->isNotFound());

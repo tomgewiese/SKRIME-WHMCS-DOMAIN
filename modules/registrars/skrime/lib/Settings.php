@@ -429,7 +429,7 @@ class Settings
                 'FriendlyName' => 'Domain-Sync: Sammelabfrage',
                 'Type' => 'yesno',
                 'Default' => 'on',
-                'Description' => 'Produktdaten über domain/all statt einzeln abrufen',
+                'Description' => 'Produktdaten über product/all statt einzeln über product/single abrufen',
             ],
             'domainSyncBatch' => [
                 'FriendlyName' => 'Domain-Sync: Domains pro Lauf',

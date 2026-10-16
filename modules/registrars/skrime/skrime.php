@@ -546,7 +546,7 @@ function skrime_GetEPPCode($params)
 function skrime_GetAllDomains($params)
 {
     try {
-        return skrime_api($params)->call('GET', 'domain/all');
+        return skrime_api($params)->call('GET', 'product/all', ['type' => 'domain']);
     } catch (\Throwable $e) {
         return skrime_error($e);
     }
@@ -563,7 +563,7 @@ function skrime_GetDomainPricelist($params)
 
 function skrime_fetchProduct(Api $api, $domain)
 {
-    $data = $api->call('GET', 'domain/single', ['domain' => $domain]);
+    $data = $api->call('GET', 'product/single', ['domain' => $domain]);
     $list = Helper::productList($data);
     if (!empty($list)) {
         return $list[0];
