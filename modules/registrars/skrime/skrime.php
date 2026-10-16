@@ -147,7 +147,7 @@ function skrime_orderDomain(array $params, $authCode)
 
     for ($year = 1; $year < $years; $year++) {
         try {
-            $api->call('POST', 'domain/renew', ['domain' => $domain]);
+            $api->call('POST', 'product/renew', ['domain' => $domain]);
         } catch (\Throwable $e) {
             return ['error' => 'Die Domain wurde für ' . $year . ' Jahr(e) registriert, die Verlängerung um weitere Jahre ist fehlgeschlagen: ' . $e->getMessage()];
         }
@@ -206,7 +206,7 @@ function skrime_RenewDomain($params)
     $domain = Helper::domainName($params);
     for ($year = 0; $year < $years; $year++) {
         try {
-            $api->call('POST', 'domain/renew', ['domain' => $domain]);
+            $api->call('POST', 'product/renew', ['domain' => $domain]);
         } catch (\Throwable $e) {
             if ($year === 0) {
                 return skrime_error($e);
