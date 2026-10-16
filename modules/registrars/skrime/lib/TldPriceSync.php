@@ -55,7 +55,7 @@ class TldPriceSync
             }
         } catch (\Throwable $e) {
             $report->error('Preisliste konnte nicht geladen werden: ' . $e->getMessage());
-            $this->finish($report);
+            $this->finish($report, false);
 
             return $report;
         }
@@ -64,7 +64,7 @@ class TldPriceSync
 
         if (empty($pricelist)) {
             $report->error('Die SKRIME-Preisliste ist leer');
-            $this->finish($report);
+            $this->finish($report, false);
 
             return $report;
         }
@@ -97,8 +97,12 @@ class TldPriceSync
                 $types[] = $type;
             }
         }
+        $defaultCurrency = $currencies->defaultCurrency();
         $restore = $this->settings->bool('tldUpdateRedemption')
+            && $defaultCurrency
+            && $currencies->isTarget($defaultCurrency['id'])
             && Capsule::schema()->hasColumn('tbldomainpricing', 'redemption_grace_period_fee');
+        $multiYear = $this->settings->int('tldMaxYears', 1, 10) > 1;
 
         foreach ($pricelist as $tld => $entry) {
             if (!empty($include) && !in_array($tld, $include, true)) {
@@ -140,16 +144,21 @@ class TldPriceSync
                         continue;
                     }
                     $old = $storedCosts === null ? null : $storedCosts[$type];
-                    if (!$this->shouldRun($force, $trigger, $isNew, $stored === null, $initial, $old, $costs[$type])) {
+                    $run = $this->shouldRun($force, $trigger, $isNew, $stored === null, $initial, $old, $costs[$type]);
+                    if (!$run && $multiYear && $type !== 'renew' && $costs['renew'] !== null) {
+                        $oldRenew = $storedCosts === null ? null : $storedCosts['renew'];
+                        $run = $this->shouldRun($force, $trigger, $isNew, $stored === null, $initial, $oldRenew, $costs['renew']);
+                    }
+                    if (!$run) {
                         continue;
                     }
-                    $this->applyType((int) $pricing->id, $tld, $type, $costs[$type], $old, $targets, $report);
+                    $this->applyType((int) $pricing->id, $tld, $type, $costs[$type], $costs['renew'], $old, $targets, $report);
                 }
 
                 if ($restore && $costs['restore'] !== null) {
                     $old = $storedCosts === null ? null : $storedCosts['restore'];
                     if ($this->shouldRun($force, $trigger, $isNew, $stored === null, $initial, $old, $costs['restore'])) {
-                        $this->applyRestore($pricing, $tld, $costs['restore'], $old, $currencies->defaultCurrency(), $report);
+                        $this->applyRestore($pricing, $tld, $costs['restore'], $old, $defaultCurrency, $report);
                     }
                 }
 
@@ -189,7 +198,7 @@ class TldPriceSync
         return abs((float) $old - (float) $new) >= 0.00005;
     }
 
-    private function applyType($relid, $tld, $type, $cost, $oldCost, array $targets, Report $report)
+    private function applyType($relid, $tld, $type, $cost, $renewCost, $oldCost, array $targets, Report $report)
     {
         $priceType = self::PRICE_TYPES[$type];
         $maxYears = $this->settings->int('tldMaxYears', 1, 10);
@@ -200,6 +209,20 @@ class TldPriceSync
             if ($yearly === null || $yearly <= 0) {
                 continue;
             }
+            $renewYearly = $yearly;
+            if ($type !== 'renew') {
+                $renewYearly = $renewCost === null ? null : $this->calculator->yearlyPrice($renewCost, 'renew', $currency);
+            }
+            $term = function ($years) use ($yearly, $renewYearly) {
+                if ($years === 1) {
+                    return $yearly;
+                }
+                if ($renewYearly === null || $renewYearly <= 0) {
+                    return null;
+                }
+
+                return round($yearly + $renewYearly * ($years - 1), 2);
+            };
 
             $query = Capsule::table('tblpricing')
                 ->where('type', $priceType)
@@ -220,7 +243,8 @@ class TldPriceSync
                 ];
                 foreach (self::YEAR_COLUMNS as $years => $column) {
                     $enabled = $type === 'transfer' ? $years === 1 : $years <= $maxYears;
-                    $insert[$column] = $enabled ? round($yearly * $years, 2) : -1;
+                    $price = $enabled ? $term($years) : null;
+                    $insert[$column] = $price === null ? -1 : $price;
                 }
                 Capsule::table('tblpricing')->insert($insert);
                 $this->record($tld, $type, '1 Jahr (neu)', $currency, null, $yearly, $oldCost, $cost, $report);
@@ -231,31 +255,43 @@ class TldPriceSync
                 $update = [];
                 $oldFirst = null;
                 $newFirst = null;
+                $disabled = 0;
                 foreach (self::YEAR_COLUMNS as $years => $column) {
-                    if ($years > $maxYears) {
-                        break;
-                    }
                     $current = (float) $row->$column;
+                    if ($years > $maxYears) {
+                        if ($current >= 0) {
+                            $update[$column] = -1;
+                            $disabled++;
+                        }
+                        continue;
+                    }
                     if ($current < 0 && !$enableYears) {
                         continue;
                     }
-                    $new = round($yearly * $years, 2);
-                    if (!$this->calculator->shouldApply($current < 0 ? 0 : $current, $new)) {
+                    $new = $term($years);
+                    if ($new === null || !$this->calculator->shouldApply($current < 0 ? null : $current, $new)) {
                         continue;
                     }
                     $update[$column] = $new;
-                    if ($oldFirst === null && $newFirst === null) {
-                        $oldFirst = $current < 0 ? null : $current / $years;
-                        $newFirst = $new / $years;
+                    if ($years === 1) {
+                        $oldFirst = $current < 0 ? null : $current;
+                        $newFirst = $new;
                     }
                 }
                 if (empty($update)) {
                     continue;
                 }
                 Capsule::table('tblpricing')->where('id', $row->id)->update($update);
-                $detail = count($update) . ' Laufzeit(en)';
+                $detail = (count($update) - $disabled) . ' Laufzeit(en)';
+                if ($disabled > 0) {
+                    $detail .= ', ' . $disabled . ' deaktiviert';
+                }
                 if ((int) $row->tsetupfee > 0) {
                     $detail .= ', Kundengruppe ' . (int) $row->tsetupfee;
+                }
+                if ($newFirst === null) {
+                    $oldFirst = (float) $row->msetupfee < 0 ? null : (float) $row->msetupfee;
+                    $newFirst = isset($update['msetupfee']) ? $update['msetupfee'] : (float) $row->msetupfee;
                 }
                 $this->record($tld, $type, $detail, $currency, $oldFirst, $newFirst, $oldCost, $cost, $report);
             }
@@ -272,7 +308,7 @@ class TldPriceSync
             return;
         }
         $current = (float) $pricing->redemption_grace_period_fee;
-        if (!$this->calculator->shouldApply($current < 0 ? 0 : $current, $price)) {
+        if (!$this->calculator->shouldApply($current < 0 ? null : $current, $price)) {
             return;
         }
         Capsule::table('tbldomainpricing')->where('id', $pricing->id)->update(['redemption_grace_period_fee' => $price]);
@@ -293,11 +329,23 @@ class TldPriceSync
             'extension' => '.' . $tld,
             'autoreg' => Settings::MODULE,
         ];
+        $numeric = false;
+        try {
+            $columns = Capsule::connection()->select("SHOW COLUMNS FROM `tbldomainpricing` LIKE 'eppcode'");
+            if (!empty($columns)) {
+                $column = (array) $columns[0];
+                $numeric = isset($column['Type']) && stripos((string) $column['Type'], 'int') !== false;
+            }
+        } catch (\Throwable $e) {
+            $numeric = false;
+        }
+        $on = $numeric ? 1 : 'on';
+        $off = $numeric ? 0 : '';
         $optional = [
-            'dnsmanagement' => '',
-            'emailforwarding' => '',
-            'idprotection' => '',
-            'eppcode' => 'on',
+            'dnsmanagement' => $off,
+            'emailforwarding' => $off,
+            'idprotection' => $off,
+            'eppcode' => $on,
             'group' => 'none',
         ];
         foreach ($optional as $column => $value) {
@@ -318,10 +366,13 @@ class TldPriceSync
         return Capsule::table('tbldomainpricing')->where('id', $id)->first();
     }
 
-    private function finish(Report $report)
+    private function finish(Report $report, $success = true)
     {
         $report->finish();
-        Storage::set('tld_last_run', time());
+        Storage::set('tld_last_attempt', time());
+        if ($success) {
+            Storage::set('tld_last_run', time());
+        }
         Storage::set('tld_last_result', $report->summary());
     }
 }

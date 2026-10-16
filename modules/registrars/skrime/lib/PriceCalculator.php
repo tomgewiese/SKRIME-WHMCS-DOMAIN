@@ -114,13 +114,13 @@ class PriceCalculator
 
     public function shouldApply($current, $new)
     {
+        if ($current === null) {
+            return true;
+        }
         $current = (float) $current;
         $new = (float) $new;
         if (abs($new - $current) < 0.005) {
             return false;
-        }
-        if ($current <= 0) {
-            return true;
         }
         if ($new > $current && !$this->settings->bool('priceIncrease')) {
             return false;
@@ -129,7 +129,7 @@ class PriceCalculator
             return false;
         }
         $threshold = max(0.0, $this->settings->float('minChangePercent'));
-        if ($threshold > 0 && abs($new - $current) / $current * 100 < $threshold) {
+        if ($threshold > 0 && $current > 0 && abs($new - $current) / $current * 100 < $threshold) {
             return false;
         }
 

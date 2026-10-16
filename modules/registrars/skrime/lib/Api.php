@@ -57,6 +57,11 @@ class Api
             'User-Agent' => 'SKRIME-WHMCS/' . Settings::VERSION,
         ];
         $payload = empty($body) ? '' : json_encode($body);
+        if ($payload === false) {
+            $error = json_last_error_msg();
+            $this->log($method, $endpoint, $body, 'json_encode: ' . $error, null);
+            throw new ApiException('Anfrage an die SKRIME API konnte nicht als JSON kodiert werden (' . $error . '). Bitte die Daten auf ungültige Zeichen prüfen.');
+        }
 
         try {
             list($status, $raw) = $this->send($method, $url, $headers, $payload);
@@ -104,7 +109,7 @@ class Api
             return call_user_func($transport, $method, $url, $headers, $payload, $this->timeout);
         }
 
-        if (class_exists('\GuzzleHttp\Client')) {
+        if (class_exists('\GuzzleHttp\Client') && method_exists('\GuzzleHttp\Client', 'request')) {
             $client = new \GuzzleHttp\Client([
                 'timeout' => $this->timeout,
                 'connect_timeout' => min(15, $this->timeout),
@@ -151,6 +156,24 @@ class Api
         if (!function_exists('logModuleCall')) {
             return;
         }
-        logModuleCall(Settings::MODULE, $method . ' ' . $endpoint, $request, $response, $processed, [$this->apiKey]);
+        $secrets = [$this->apiKey];
+        if (is_array($request) && isset($request['authCode']) && is_scalar($request['authCode'])) {
+            $secrets[] = (string) $request['authCode'];
+        }
+        if (is_array($processed) && isset($processed['data']['authcode']) && is_scalar($processed['data']['authcode'])) {
+            $secrets[] = (string) $processed['data']['authcode'];
+        }
+        $mask = [];
+        foreach ($secrets as $secret) {
+            if ($secret === '') {
+                continue;
+            }
+            $mask[] = $secret;
+            $encoded = json_encode($secret);
+            if (is_string($encoded) && strlen($encoded) > 2) {
+                $mask[] = substr($encoded, 1, -1);
+            }
+        }
+        logModuleCall(Settings::MODULE, $method . ' ' . $endpoint, $request, $response, $processed, array_values(array_unique($mask)));
     }
 }

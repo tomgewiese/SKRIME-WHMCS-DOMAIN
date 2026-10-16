@@ -68,7 +68,7 @@ class Helper
         return array_slice($nameservers, 0, 6);
     }
 
-    public static function contactFromParams(array $params, Settings $settings)
+    public static function contactFromParams(array $params, Settings $settings, $clean = true)
     {
         $address1 = isset($params['address1']) ? $params['address1'] : '';
         $address2 = isset($params['address2']) ? trim((string) $params['address2']) : '';
@@ -78,7 +78,7 @@ class Helper
         }
 
         $company = isset($params['companyname']) ? (string) $params['companyname'] : '';
-        if ($settings->bool('cleanCompanyName')) {
+        if ($clean && $settings->bool('cleanCompanyName')) {
             $company = self::cleanOrganizationName($company);
         }
 
@@ -97,19 +97,15 @@ class Helper
         ];
     }
 
-    public static function contactFromDetails(array $details, array $params, Settings $settings)
+    public static function contactFromDetails(array $details, array $params)
     {
         $street = trim((string) self::pick($details, ['Address 1', 'Street'], ''));
-        $extra = trim((string) self::pick($details, ['Address 2', 'House Number'], ''));
-        list($street, $number) = self::extractStreetAndNumber($street);
-        if ($number === '' && $extra !== '') {
-            $number = $extra;
+        $number = trim((string) self::pick($details, ['Address 2', 'House Number'], ''));
+        if ($number === '') {
+            list($street, $number) = self::extractStreetAndNumber($street);
         }
 
         $company = (string) self::pick($details, ['Company Name', 'Organisation Name', 'Organization Name'], '');
-        if ($settings->bool('cleanCompanyName')) {
-            $company = self::cleanOrganizationName($company);
-        }
 
         $phone = trim((string) self::pick($details, ['Phone Number', 'Phone'], ''));
         if ($phone !== '' && strpos($phone, '+') !== 0 && isset($params['phonecc']) && $params['phonecc'] !== '') {

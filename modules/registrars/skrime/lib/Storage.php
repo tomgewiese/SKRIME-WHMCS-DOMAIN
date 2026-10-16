@@ -12,6 +12,7 @@ class Storage
     const TABLE_LOG = 'mod_skrime_price_log';
 
     private static $schemaReady = false;
+    private static $locks = [];
 
     public static function ensureSchema()
     {
@@ -105,8 +106,11 @@ class Storage
         self::ensureSchema();
         $key = 'lock_' . $name;
         $now = time();
+        $token = self::lockToken();
+        $value = $now . ':' . $token;
         try {
-            Capsule::table(self::TABLE_KV)->insert(['name' => $key, 'value' => (string) $now, 'updated_at' => self::now()]);
+            Capsule::table(self::TABLE_KV)->insert(['name' => $key, 'value' => $value, 'updated_at' => self::now()]);
+            self::$locks[$name] = $token;
 
             return true;
         } catch (\Throwable $e) {
@@ -117,16 +121,51 @@ class Storage
                         ->orWhere('value', '')
                         ->orWhere('value', '<', (string) ($now - $ttl));
                 })
-                ->update(['value' => (string) $now, 'updated_at' => self::now()]);
+                ->update(['value' => $value, 'updated_at' => self::now()]);
+            if ($affected > 0) {
+                self::$locks[$name] = $token;
 
-            return $affected > 0;
+                return true;
+            }
+
+            return false;
         }
+    }
+
+    public static function refreshLock($name)
+    {
+        if (!isset(self::$locks[$name])) {
+            return false;
+        }
+        $token = self::$locks[$name];
+
+        return Capsule::table(self::TABLE_KV)
+            ->where('name', 'lock_' . $name)
+            ->where('value', 'like', '%:' . $token)
+            ->update(['value' => time() . ':' . $token, 'updated_at' => self::now()]) > 0;
     }
 
     public static function releaseLock($name)
     {
+        if (!isset(self::$locks[$name])) {
+            return;
+        }
+        $token = self::$locks[$name];
+        unset(self::$locks[$name]);
         self::ensureSchema();
-        Capsule::table(self::TABLE_KV)->where('name', 'lock_' . $name)->update(['value' => '', 'updated_at' => self::now()]);
+        Capsule::table(self::TABLE_KV)
+            ->where('name', 'lock_' . $name)
+            ->where('value', 'like', '%:' . $token)
+            ->update(['value' => '', 'updated_at' => self::now()]);
+    }
+
+    private static function lockToken()
+    {
+        try {
+            return bin2hex(random_bytes(8));
+        } catch (\Throwable $e) {
+            return md5(uniqid((string) mt_rand(), true));
+        }
     }
 
     public static function isDue($name, $hours)

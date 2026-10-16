@@ -34,7 +34,7 @@ if (defined('ADMINAREA') && class_exists('\WHMCS\Module\AbstractWidget')) {
         protected $columns = 1;
         protected $cache = false;
         protected $cacheExpiry = 120;
-        protected $requiredPermission = '';
+        protected $requiredPermission = 'List Domains';
 
         public function getData()
         {

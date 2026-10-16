@@ -81,10 +81,20 @@ function skrime_error(\Throwable $e)
     return ['error' => $e->getMessage()];
 }
 
+function skrime_years(array $params)
+{
+    return max(1, isset($params['regperiod']) ? (int) $params['regperiod'] : 1);
+}
+
 function skrime_orderDomain(array $params, $authCode)
 {
     $settings = Settings::fromParams($params);
     $domain = Helper::domainName($params);
+    $years = skrime_years($params);
+    $isTransfer = (string) $authCode !== '';
+    if ($years > 1 && ($isTransfer || $settings->choice('multiYearMode') !== 'renew')) {
+        return ['error' => 'SKRIME ' . ($isTransfer ? 'transferiert' : 'registriert') . ' Domains je Vorgang für 1 Jahr. Die gewählte Laufzeit von ' . $years . ' Jahren wird nicht unterstützt (Einstellung "Mehrjährige Laufzeiten").'];
+    }
     $nameservers = Helper::orderNameservers($params, $settings);
     if (count($nameservers) < 2) {
         return ['error' => 'Es werden mindestens 2 Nameserver benötigt. Bitte Standard-Nameserver in den Registrar-Einstellungen hinterlegen.'];
@@ -120,6 +130,14 @@ function skrime_orderDomain(array $params, $authCode)
     }
 
     skrime_rememberOrder($params, $settings, $domain, $product);
+
+    for ($year = 1; $year < $years; $year++) {
+        try {
+            $api->call('POST', 'domain/renew', ['domain' => $domain]);
+        } catch (\Throwable $e) {
+            return ['error' => 'Die Domain wurde für ' . $year . ' Jahr(e) registriert, die Verlängerung um weitere Jahre ist fehlgeschlagen: ' . $e->getMessage()];
+        }
+    }
 
     return ['success' => true];
 }
@@ -164,15 +182,27 @@ function skrime_TransferDomain($params)
 
 function skrime_RenewDomain($params)
 {
-    try {
-        skrime_api($params)->call('POST', 'domain/renew', [
-            'domain' => Helper::domainName($params),
-        ]);
-
-        return ['success' => true];
-    } catch (\Throwable $e) {
-        return skrime_error($e);
+    $settings = Settings::fromParams($params);
+    $years = skrime_years($params);
+    if ($years > 1 && $settings->choice('multiYearMode') !== 'renew') {
+        return ['error' => 'SKRIME verlängert Domains je Vorgang um 1 Jahr. Die gewählte Laufzeit von ' . $years . ' Jahren wird nicht unterstützt (Einstellung "Mehrjährige Laufzeiten").'];
     }
+
+    $api = Api::fromSettings($settings);
+    $domain = Helper::domainName($params);
+    for ($year = 0; $year < $years; $year++) {
+        try {
+            $api->call('POST', 'domain/renew', ['domain' => $domain]);
+        } catch (\Throwable $e) {
+            if ($year === 0) {
+                return skrime_error($e);
+            }
+
+            return ['error' => 'Die Domain wurde um ' . $year . ' Jahr(e) verlängert, die weitere Verlängerung ist fehlgeschlagen: ' . $e->getMessage()];
+        }
+    }
+
+    return ['success' => true];
 }
 
 function skrime_GetNameservers($params)
@@ -250,12 +280,12 @@ function skrime_SaveContactDetails($params)
         ? $params['contactdetails']['Registrant']
         : null;
     if ($details === null) {
-        $contact = Helper::contactFromParams($params, $settings);
+        $contact = Helper::contactFromParams($params, $settings, false);
         if ($contact['company'] === '') {
             unset($contact['company']);
         }
     } else {
-        $contact = Helper::contactFromDetails($details, $params, $settings);
+        $contact = Helper::contactFromDetails($details, $params);
     }
 
     try {
@@ -301,21 +331,30 @@ function skrime_CheckAvailability($params)
         : $searchTerm;
     $tlds = isset($params['tldsToInclude']) && is_array($params['tldsToInclude']) ? $params['tldsToInclude'] : [];
 
+    $premiumBlocked = $settings->choice('premiumHandling') === 'unavailable'
+        || (array_key_exists('premiumEnabled', $params) && empty($params['premiumEnabled']));
+
     try {
         $api = Api::fromSettings($settings);
         $results = new ResultsList();
         $lastError = null;
         $checked = 0;
+        $offline = false;
 
         foreach ($tlds as $tld) {
             $searchResult = new SearchResult($searchTerm, $tld);
+            if ($offline) {
+                $searchResult->setStatus(skrime_searchStatus('STATUS_UNKNOWN', 'STATUS_TLD_NOT_SUPPORTED'));
+                $results->append($searchResult);
+                continue;
+            }
             try {
                 $data = $api->call('POST', 'domain/check', [
                     'domain' => strtolower($label . '.' . ltrim((string) $tld, '.')),
                 ]);
                 $checked++;
                 if (!empty($data['available'])) {
-                    $status = !empty($data['premium']) && $settings->choice('premiumHandling') === 'unavailable'
+                    $status = !empty($data['premium']) && $premiumBlocked
                         ? SearchResult::STATUS_RESERVED
                         : SearchResult::STATUS_NOT_REGISTERED;
                 } else {
@@ -323,6 +362,7 @@ function skrime_CheckAvailability($params)
                 }
             } catch (ApiException $e) {
                 $lastError = $e;
+                $offline = $e->getHttpStatus() === 0;
                 $status = skrime_searchStatus('STATUS_UNKNOWN', 'STATUS_TLD_NOT_SUPPORTED');
             }
             $searchResult->setStatus($status);
@@ -389,20 +429,51 @@ function skrime_SaveDNS($params)
     $settings = Settings::fromParams($params);
     $fieldMode = $settings->choice('dnsMxMode') === 'field';
     $domain = Helper::domainName($params);
-    $records = [];
 
+    $api = Api::fromSettings($settings);
+    try {
+        $current = $api->call('GET', 'domain/dns', ['domain' => $domain]);
+    } catch (ApiException $e) {
+        if (!$e->isNotFound()) {
+            return skrime_error($e);
+        }
+        $current = [];
+    } catch (\Throwable $e) {
+        return skrime_error($e);
+    }
+
+    $protected = [];
+    foreach (isset($current['records']) && is_array($current['records']) ? $current['records'] : [] as $record) {
+        if (!is_array($record)) {
+            continue;
+        }
+        $type = strtoupper(isset($record['type']) ? (string) $record['type'] : '');
+        if (in_array($type, SKRIME_WHMCS_DNS_TYPES, true)) {
+            continue;
+        }
+        $key = strtolower(isset($record['name']) ? (string) $record['name'] : '@') . '|' . trim(isset($record['data']) ? (string) $record['data'] : '');
+        $protected[$key][] = $record;
+    }
+
+    $records = [];
     foreach (isset($params['dnsrecords']) && is_array($params['dnsrecords']) ? $params['dnsrecords'] : [] as $record) {
         $address = isset($record['address']) ? trim((string) $record['address']) : '';
         if ($address === '') {
+            continue;
+        }
+        $name = isset($record['hostname']) ? trim((string) $record['hostname']) : '';
+        $name = $name === '' ? '@' : $name;
+        $key = strtolower($name) . '|' . $address;
+        if (!empty($protected[$key])) {
+            $records[] = array_shift($protected[$key]);
             continue;
         }
         $type = strtoupper(isset($record['type']) ? trim((string) $record['type']) : '');
         if (!in_array($type, SKRIME_API_DNS_TYPES, true)) {
             return ['error' => 'Der Record-Typ ' . $type . ' wird von SKRIME nicht unterstützt.'];
         }
-        $name = isset($record['hostname']) ? trim((string) $record['hostname']) : '';
         $entry = [
-            'name' => $name === '' ? '@' : $name,
+            'name' => $name,
             'type' => $type,
             'data' => $address,
         ];
@@ -417,19 +488,15 @@ function skrime_SaveDNS($params)
         $records[] = $entry;
     }
 
-    try {
-        $api = Api::fromSettings($settings);
-        if ($settings->bool('dnsKeepUnsupported')) {
-            $current = $api->call('GET', 'domain/dns', ['domain' => $domain]);
-            foreach (isset($current['records']) && is_array($current['records']) ? $current['records'] : [] as $record) {
-                $type = strtoupper(isset($record['type']) ? (string) $record['type'] : '');
-                if (!is_array($record) || in_array($type, SKRIME_WHMCS_DNS_TYPES, true)) {
-                    continue;
-                }
+    if ($settings->bool('dnsKeepUnsupported')) {
+        foreach ($protected as $remaining) {
+            foreach ($remaining as $record) {
                 $records[] = $record;
             }
         }
+    }
 
+    try {
         $api->call('POST', 'domain/dns', [
             'domain' => $domain,
             'records' => $records,
@@ -479,8 +546,14 @@ function skrime_fetchProduct(Api $api, $domain)
 {
     $data = $api->call('GET', 'domain/single', ['domain' => $domain]);
     $list = Helper::productList($data);
+    if (!empty($list)) {
+        return $list[0];
+    }
+    if (is_array($data) && (isset($data['expireAt']) || isset($data['state']) || isset($data['id']))) {
+        return $data;
+    }
 
-    return !empty($list) ? $list[0] : (is_array($data) ? $data : []);
+    return [];
 }
 
 function skrime_Sync($params)
@@ -491,7 +564,7 @@ function skrime_Sync($params)
     try {
         $product = skrime_fetchProduct(Api::fromSettings($settings), $domain);
     } catch (ApiException $e) {
-        if ($e->isNotFound() && $settings->bool('syncMissingAsCancelled')) {
+        if ($e->isProductMissing() && $settings->bool('syncMissingAsCancelled')) {
             return [
                 'expirydate' => date('Y-m-d'),
                 'active' => false,
@@ -505,7 +578,7 @@ function skrime_Sync($params)
         return skrime_error($e);
     }
 
-    if ($settings->bool('domainSyncEnabled') && $settings->bool('domainSyncOnSync') && !empty($params['domainid'])) {
+    if ($settings->bool('domainSyncEnabled') && $settings->bool('domainSyncOnSync') && !empty($params['domainid']) && !empty($product)) {
         try {
             (new DomainPriceSync($settings))->runForDomain((int) $params['domainid'], $product, false);
         } catch (\Throwable $e) {
@@ -549,8 +622,9 @@ function skrime_TransferSync($params)
         return skrime_error($e);
     }
 
-    $status = Helper::productStatus($product);
-    if ($status === 'active') {
+    $state = isset($product['state']) && is_scalar($product['state']) ? strtolower(trim((string) $product['state'])) : '';
+    $status = $state === '' ? 'pending' : Helper::productStatus($product);
+    if ($state === 'active') {
         $result = ['completed' => true];
         $expiry = isset($product['expireAt']) ? Helper::toDate($product['expireAt']) : null;
         if ($expiry !== null) {

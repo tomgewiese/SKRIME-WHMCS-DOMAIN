@@ -6,6 +6,11 @@ use WHMCS\Database\Capsule;
 
 class DomainPriceSync
 {
+    const MAX_TRANSPORT_FAILURES = 3;
+    const BATCH_SECONDS = 900;
+
+    private static $sharedPricelist;
+
     private $settings;
     private $api;
     private $calculator;
@@ -15,7 +20,9 @@ class DomainPriceSync
     private $knownTlds;
     private $addonPricing = [];
     private $renewPricing = [];
+    private $groupPricing = [];
     private $hasUpdatedAt;
+    private $transportFailure = false;
 
     public function __construct(Settings $settings, ?Api $api = null)
     {
@@ -35,6 +42,10 @@ class DomainPriceSync
         $report = new Report('Domain-Preisabgleich');
         $cursor = (int) Storage::get('domain_cursor', 0);
 
+        if ($cursor > 0 && (int) Storage::get('domain_force_pending', 0) === 1) {
+            $force = true;
+        }
+
         if ($cursor === 0) {
             if (!$force && !Storage::isDue('domain_cycle_start', $this->settings->int('domainSyncInterval', 1, 8760))) {
                 return null;
@@ -49,19 +60,49 @@ class DomainPriceSync
             ->limit($batch)
             ->get();
 
+        $started = time();
+        $failures = 0;
+        $streakStart = null;
+        $stopped = false;
+        $processed = 0;
+
         if (count($domains) > 0) {
             $source = $this->settings->choice('domainSyncSource');
             if (in_array($source, ['product', 'product_pricelist'], true) && $this->settings->bool('domainSyncBulk')) {
                 $this->loadBulkProducts($report);
             }
             foreach ($domains as $domain) {
-                $this->processRow($domain, null, $force, $report);
+                $result = $this->processRow($domain, null, $force, $report);
+                $processed++;
+                if ($this->transportFailure) {
+                    if ($failures === 0) {
+                        $streakStart = $cursor;
+                    }
+                    $failures++;
+                } elseif (in_array($result, ['changed', 'unchanged'], true)) {
+                    $failures = 0;
+                    $streakStart = null;
+                }
                 $cursor = (int) $domain->id;
+                if ($failures >= self::MAX_TRANSPORT_FAILURES) {
+                    $report->error('SKRIME API nicht erreichbar, Abgleich wird beim nächsten Cron-Lauf fortgesetzt');
+                    $cursor = (int) $streakStart;
+                    $stopped = true;
+                    break;
+                }
+                if (time() - $started >= self::BATCH_SECONDS) {
+                    $stopped = true;
+                    break;
+                }
+                if ($processed % 10 === 0) {
+                    Storage::refreshLock(Cron::LOCK);
+                }
             }
         }
 
-        if (count($domains) < $batch) {
+        if (!$stopped && count($domains) < $batch) {
             Storage::set('domain_cursor', 0);
+            Storage::set('domain_force_pending', 0);
             Storage::set('domain_last_complete', time());
         } else {
             Storage::set('domain_cursor', $cursor);
@@ -102,6 +143,7 @@ class DomainPriceSync
     {
         Storage::ensureSchema();
         Storage::set('domain_cursor', 0);
+        Storage::set('domain_force_pending', 1);
         $started = time();
         $changes = 0;
         $errors = [];
@@ -113,32 +155,39 @@ class DomainPriceSync
             $changes += count($report->changes());
             $errors = array_merge($errors, $report->errors());
             $cursor = (int) Storage::get('domain_cursor', 0);
-        } while ($cursor > 0 && time() - $started < $maxSeconds);
+        } while ($cursor > 0 && time() - $started < $maxSeconds && empty($report->errors()));
+
+        $complete = (int) Storage::get('domain_cursor', 0) === 0;
+        Storage::set('domain_force_pending', $complete ? 0 : 1);
 
         return [
             'changes' => $changes,
             'errors' => $errors,
-            'complete' => (int) Storage::get('domain_cursor', 0) === 0,
+            'complete' => $complete,
         ];
     }
 
     private function baseQuery()
     {
-        $statuses = $this->settings->csv('domainStatuses', false);
-        if (empty($statuses)) {
-            $statuses = ['Active'];
-        }
-
         return Capsule::table('tbldomains')
             ->where('registrar', Settings::MODULE)
-            ->whereIn('status', $statuses);
+            ->whereIn('status', $this->statuses());
+    }
+
+    private function statuses()
+    {
+        $statuses = $this->settings->csv('domainStatuses', false);
+
+        return empty($statuses) ? ['Active'] : $statuses;
     }
 
     private function processRow($row, $product, $force, Report $report)
     {
+        $this->transportFailure = false;
         try {
             $result = $this->processDomain($row, $product, $force, $report);
         } catch (\Throwable $e) {
+            $this->transportFailure = $e instanceof ApiException && $e->isTransportError();
             $result = 'Fehler: ' . $e->getMessage();
             $report->error($row->domain . ': ' . $e->getMessage());
         }
@@ -149,7 +198,7 @@ class DomainPriceSync
 
     private function processDomain($row, $product, $force, Report $report)
     {
-        $statuses = array_map('strtolower', $this->settings->csv('domainStatuses', false) ?: ['Active']);
+        $statuses = array_map('strtolower', $this->statuses());
         if (!$force && !in_array(strtolower((string) $row->status), $statuses, true)) {
             return 'Status ' . $row->status . ' ausgeschlossen';
         }
@@ -172,12 +221,21 @@ class DomainPriceSync
         if (!$currency || $currency['factor'] === null) {
             return 'Keine Umrechnung für die Kundenwährung möglich';
         }
+        if ($source !== 'whmcs' && !$this->currencies()->isTarget($currency['id'])) {
+            return 'Währung ' . $currency['code'] . ' ist vom Preisabgleich ausgeschlossen';
+        }
 
         $domain = strtolower((string) $row->domain);
+        $groupId = $client && isset($client->groupid) ? (int) $client->groupid : 0;
+        if ($source !== 'whmcs' && $groupId > 0 && $this->settings->bool('domainSkipClientGroups')
+            && $this->hasGroupPricing($domain, $currency, $groupId)) {
+            return 'Kundengruppe mit eigenen TLD-Preisen übersprungen';
+        }
+
         if ($product === null && in_array($source, ['product', 'product_pricelist'], true)) {
             $product = $this->product($domain);
         }
-        if (is_array($product)) {
+        if (is_array($product) && !empty($product)) {
             Storage::rememberProduct((int) $row->id, $domain, $product);
         }
 
@@ -195,7 +253,7 @@ class DomainPriceSync
         $period = max(1, (int) $row->registrationperiod);
         $target = null;
         if ($source === 'whmcs') {
-            $target = $this->whmcsRenewPrice($domain, $currency, $period);
+            $target = $this->whmcsRenewPrice($domain, $currency, $period, $groupId);
             $basis = $target;
             $basisSource = 'whmcs';
         } elseif ($basis !== null) {
@@ -211,16 +269,19 @@ class DomainPriceSync
         $hasBaseline = $state !== null && $state['basis'] !== null && $state['basis_source'] === $basisSource;
         $changed = $hasBaseline ? abs((float) $state['basis'] - (float) $basis) >= 0.00005 : null;
         $oldBasis = $hasBaseline ? (float) $state['basis'] : null;
-
-        Storage::saveDomainState((int) $row->id, [
-            'domain' => substr($domain, 0, 191),
-            'basis' => $basis,
-            'basis_source' => $basisSource,
-        ]);
+        $saveBasis = function () use ($row, $domain, $basis, $basisSource) {
+            Storage::saveDomainState((int) $row->id, [
+                'domain' => substr($domain, 0, 191),
+                'basis' => $basis,
+                'basis_source' => $basisSource,
+            ]);
+        };
 
         $trigger = $this->settings->choice('domainSyncTrigger');
         $run = $force || $trigger === 'always' || ($changed === null ? $this->settings->bool('domainSyncInitial') : $changed);
         if (!$run) {
+            $saveBasis();
+
             return 'unchanged';
         }
 
@@ -230,9 +291,12 @@ class DomainPriceSync
 
         $current = round((float) $row->recurringamount, 2);
         if (abs($target - $current) < 0.005) {
+            $saveBasis();
+
             return 'unchanged';
         }
         if (!$this->calculator->shouldApply($current, $target)) {
+            $saveBasis();
             $report->count('gefiltert');
 
             return $force
@@ -248,6 +312,7 @@ class DomainPriceSync
             $update['updated_at'] = Storage::now();
         }
         Capsule::table('tbldomains')->where('id', (int) $row->id)->update($update);
+        $saveBasis();
 
         $detail = 'Verlängerung ' . $period . ' Jahr(e)';
         $report->change($row->domain, $detail, $currency['code'], $current, $target);
@@ -299,13 +364,24 @@ class DomainPriceSync
             return $list[0];
         }
 
-        return is_array($data) ? $data : null;
+        return is_array($data) && (isset($data['price']) || isset($data['state'])) ? $data : null;
     }
 
     private function pricelistRenewCost($domain)
     {
         if ($this->pricelist === null) {
-            $this->pricelist = Pricelist::fetch($this->api);
+            if (self::$sharedPricelist === null) {
+                try {
+                    self::$sharedPricelist = Pricelist::fetch($this->api);
+                } catch (\Throwable $e) {
+                    self::$sharedPricelist = [];
+                    throw $e;
+                }
+            }
+            $this->pricelist = self::$sharedPricelist;
+        }
+        if (empty($this->pricelist)) {
+            return null;
         }
         list(, $tld) = Helper::splitDomain($domain, array_keys($this->pricelist));
         if (!isset($this->pricelist[$tld])) {
@@ -328,21 +404,49 @@ class DomainPriceSync
         return $this->knownTlds;
     }
 
-    private function whmcsRenewPrice($domain, array $currency, $period)
+    private function tldPricingId($domain)
     {
         list(, $tld) = Helper::splitDomain($domain, $this->knownTlds());
-        $cacheKey = $tld . '|' . $currency['id'];
+        if ($tld === '') {
+            return [null, $tld];
+        }
+
+        return [
+            Capsule::table('tbldomainpricing')->whereIn('extension', ['.' . $tld, $tld])->value('id'),
+            $tld,
+        ];
+    }
+
+    private function hasGroupPricing($domain, array $currency, $groupId)
+    {
+        list($relid, $tld) = $this->tldPricingId($domain);
+        $cacheKey = $tld . '|' . $currency['id'] . '|' . $groupId;
+        if (!array_key_exists($cacheKey, $this->groupPricing)) {
+            $this->groupPricing[$cacheKey] = $relid && Capsule::table('tblpricing')
+                ->where('type', 'domainrenew')
+                ->where('relid', $relid)
+                ->where('currency', $currency['id'])
+                ->where('tsetupfee', (int) $groupId)
+                ->exists();
+        }
+
+        return $this->groupPricing[$cacheKey];
+    }
+
+    private function whmcsRenewPrice($domain, array $currency, $period, $groupId = 0)
+    {
+        list($relid, $tld) = $this->tldPricingId($domain);
+        $groupId = max(0, (int) $groupId);
+        $cacheKey = $tld . '|' . $currency['id'] . '|' . $groupId;
         if (!array_key_exists($cacheKey, $this->renewPricing)) {
             $this->renewPricing[$cacheKey] = null;
-            $relid = Capsule::table('tbldomainpricing')
-                ->whereIn('extension', ['.' . $tld, $tld])
-                ->value('id');
             if ($relid) {
                 $this->renewPricing[$cacheKey] = Capsule::table('tblpricing')
                     ->where('type', 'domainrenew')
                     ->where('relid', $relid)
                     ->where('currency', $currency['id'])
-                    ->where('tsetupfee', 0)
+                    ->whereIn('tsetupfee', array_values(array_unique([0, $groupId])))
+                    ->orderBy('tsetupfee', 'desc')
                     ->first();
             }
         }

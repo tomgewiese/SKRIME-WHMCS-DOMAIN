@@ -6,6 +6,7 @@ class Cron
 {
     const LOCK = 'cron';
     const LOCK_TTL = 1800;
+    const RETRY_SECONDS = 900;
 
     public static function run(?Settings $settings = null)
     {
@@ -19,6 +20,7 @@ class Cron
 
         try {
             Storage::ensureSchema();
+            $forcePending = (int) Storage::get('domain_force_pending', 0) === 1 && (int) Storage::get('domain_cursor', 0) > 0;
             if (!Storage::acquireLock(self::LOCK, self::LOCK_TTL)) {
                 return;
             }
@@ -35,13 +37,14 @@ class Cron
             $api = Api::fromSettings($settings);
             $pricelist = null;
 
-            if ($tldEnabled && Storage::isDue('tld_last_run', $settings->int('tldSyncInterval', 1, 8760))) {
+            $retryDue = time() - (int) Storage::get('tld_last_attempt', 0) >= self::RETRY_SECONDS;
+            if ($tldEnabled && $retryDue && Storage::isDue('tld_last_run', $settings->int('tldSyncInterval', 1, 8760))) {
                 $tldSync = new TldPriceSync($settings, $api);
                 $tldSync->run(false);
                 $pricelist = $tldSync->pricelist();
             }
 
-            if ($domainEnabled) {
+            if ($domainEnabled || $forcePending) {
                 $domainSync = new DomainPriceSync($settings, $api);
                 if (is_array($pricelist) && !empty($pricelist)) {
                     $domainSync->setPricelist($pricelist);

@@ -13,6 +13,27 @@ class HelperTest extends TestCase
         $this->assertSame(['Hauptweg', ''], Helper::extractStreetAndNumber('Hauptweg'));
     }
 
+    public function testContactFromDetailsKeepsStreetWhenNumberGiven()
+    {
+        $contact = Helper::contactFromDetails([
+            'First Name' => 'Erika',
+            'Last Name' => 'Muster',
+            'Company Name' => 'Firma (Test)',
+            'Address 1' => 'Straße des 17. Juni',
+            'Address 2' => '135',
+            'Country' => 'de',
+        ], []);
+        $this->assertSame('Straße des 17. Juni', $contact['street']);
+        $this->assertSame('135', $contact['number']);
+        $this->assertSame('Firma (Test)', $contact['company']);
+        $this->assertSame('DE', $contact['country']);
+
+        $contact = Helper::contactFromDetails(['Address 1' => 'Hauptstraße 5b', 'Address 2' => ''], []);
+        $this->assertSame('Hauptstraße', $contact['street']);
+        $this->assertSame('5b', $contact['number']);
+        $this->assertArrayNotHasKey('company', $contact);
+    }
+
     public function testOrderNameserversAreFilledWithDefaults()
     {
         $settings = new Settings(['defaultNameservers' => 'ns1.default.tld, ns2.default.tld']);

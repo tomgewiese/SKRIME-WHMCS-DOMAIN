@@ -121,10 +121,20 @@ class Settings
                 'Type' => 'dropdown',
                 'Options' => [
                     'unavailable' => 'Als nicht verfügbar anzeigen',
-                    'available' => 'Als verfügbar anzeigen',
+                    'available' => 'Zum normalen TLD-Preis anbieten',
                 ],
                 'Default' => 'unavailable',
-                'Description' => 'Verhalten bei der Verfügbarkeitsprüfung',
+                'Description' => 'Die SKRIME API liefert keine Premium-Preise. "Anbieten" verkauft Premium-Domains zum normalen TLD-Preis, SKRIME berechnet ggf. den Premium-Preis. Ist der Premium-Verkauf in WHMCS deaktiviert, gelten sie immer als nicht verfügbar',
+            ],
+            'multiYearMode' => [
+                'FriendlyName' => 'Mehrjährige Laufzeiten',
+                'Type' => 'dropdown',
+                'Options' => [
+                    'reject' => 'Ablehnen (SKRIME registriert/verlängert je Vorgang 1 Jahr)',
+                    'renew' => 'Weitere Jahre per Verlängerung buchen',
+                ],
+                'Default' => 'reject',
+                'Description' => 'Umgang mit Registrierungen, Transfers und Verlängerungen über mehr als 1 Jahr',
             ],
             'idProtectionOnOrder' => [
                 'FriendlyName' => 'WHOIS-Privacy bei Bestellung',
@@ -171,7 +181,7 @@ class Settings
                 'FriendlyName' => 'TLD-Sync: Aktiv',
                 'Type' => 'yesno',
                 'Default' => '',
-                'Description' => 'TLD-Preise (Registrierung/Transfer/Verlängerung) automatisch aus der SKRIME-Preisliste aktualisieren',
+                'Description' => 'TLD-Preise (Registrierung/Transfer/Verlängerung) automatisch aus der SKRIME-Preisliste aktualisieren. Vorher den Aufschlag konfigurieren',
             ],
             'tldSyncInterval' => [
                 'FriendlyName' => 'TLD-Sync: Intervall',
@@ -246,8 +256,8 @@ class Settings
                 'FriendlyName' => 'TLD-Sync: Maximale Laufzeit',
                 'Type' => 'dropdown',
                 'Options' => $years,
-                'Default' => '10',
-                'Description' => 'Preise bis zu dieser Laufzeit pflegen',
+                'Default' => '1',
+                'Description' => 'Preise bis zu dieser Laufzeit pflegen, längere Laufzeiten werden deaktiviert. Mehr als 1 Jahr nur mit "Weitere Jahre per Verlängerung buchen"',
             ],
             'tldEnableYears' => [
                 'FriendlyName' => 'TLD-Sync: Deaktivierte Laufzeiten aktivieren',
@@ -368,7 +378,7 @@ class Settings
             'currencyFallback' => [
                 'FriendlyName' => 'Preis: Standardwährung als EUR',
                 'Type' => 'yesno',
-                'Default' => 'on',
+                'Default' => '',
                 'Description' => 'Standardwährung als EUR behandeln, wenn keine EUR-Währung angelegt ist',
             ],
             'domainSyncEnabled' => [
@@ -475,6 +485,12 @@ class Settings
                 'Type' => 'yesno',
                 'Default' => 'on',
                 'Description' => '',
+            ],
+            'domainSkipClientGroups' => [
+                'FriendlyName' => 'Domain-Sync: Kundengruppen-Preise schützen',
+                'Type' => 'yesno',
+                'Default' => 'on',
+                'Description' => 'Domains von Kunden überspringen, deren Kundengruppe eigene TLD-Preise hat (bei Preisquelle WHMCS wird der Gruppenpreis verwendet)',
             ],
             'domainSkipDoNotRenew' => [
                 'FriendlyName' => 'Domain-Sync: "Nicht verlängern" überspringen',

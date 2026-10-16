@@ -26,11 +26,20 @@ class ApiException extends \Exception
 
     public function isNotFound()
     {
-        if ($this->httpStatus === 404) {
+        if (strpos(strtolower($this->getMessage()), 'no product found') !== false) {
             return true;
         }
-        $message = strtolower($this->getMessage());
 
-        return strpos($message, 'no product found') !== false || strpos($message, 'not found') !== false;
+        return $this->httpStatus === 404 && is_array($this->response);
+    }
+
+    public function isProductMissing()
+    {
+        return is_array($this->response) && strpos(strtolower($this->getMessage()), 'no product found') !== false;
+    }
+
+    public function isTransportError()
+    {
+        return $this->httpStatus === 0 || $this->httpStatus >= 500;
     }
 }
