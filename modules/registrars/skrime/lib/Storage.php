@@ -85,6 +85,9 @@ class Storage
             'last_currency' => function ($table) {
                 $table->string('last_currency', 8)->default('');
             },
+            'pending_basis' => function ($table) {
+                $table->decimal('pending_basis', 12, 4)->nullable();
+            },
             'checked_at' => function ($table) {
                 $table->dateTime('checked_at')->nullable();
             },

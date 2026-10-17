@@ -239,7 +239,9 @@ class DomainPriceSync
             $this->recordCostEvent($row, $domain, $report);
             throw $e;
         }
-        if ($result !== 'changed' && $result !== 'unchanged' && $this->notApplied === null) {
+        if ($result === 'changed') {
+            $this->notApplied = null;
+        } elseif ($result !== 'unchanged' && $this->notApplied === null) {
             $this->notApplied = $result;
         }
         $this->recordCostEvent($row, $domain, $report);
@@ -353,11 +355,13 @@ class DomainPriceSync
             $this->notApplied = 'Preisquelle ist nicht der Produktpreis';
         }
 
-        $saveState = function ($price) use ($row, $domain, &$basis, &$basisSource, $currency, $period, $addons, $costForMargin) {
+        $pendingBasis = null;
+        $saveState = function ($price) use ($row, $domain, &$basis, &$basisSource, &$pendingBasis, $currency, $period, $addons, $costForMargin) {
             $data = [
                 'domain' => substr($domain, 0, 191),
                 'last_price' => round((float) $price, 2),
                 'last_currency' => $currency ? $currency['code'] : '',
+                'pending_basis' => $pendingBasis,
             ];
             if ($basis !== null) {
                 $data['basis'] = $basis;
@@ -415,8 +419,11 @@ class DomainPriceSync
             return $skipWith('Kundengruppe mit eigenen TLD-Preisen übersprungen');
         }
 
+        $edited = isset($state['pending_basis']) && $state['pending_basis'] !== null
+            && isset($state['last_price']) && $state['last_price'] !== null
+            && abs((float) $state['last_price'] - $current) >= 0.005;
         $hasBaseline = isset($state['basis']) && $state['basis'] !== null && isset($state['basis_source']) && $state['basis_source'] === $basisSource;
-        $oldBasis = $hasBaseline ? (float) $state['basis'] : null;
+        $oldBasis = $hasBaseline ? (float) ($edited ? $state['pending_basis'] : $state['basis']) : null;
         $changed = $hasBaseline && $basis !== null ? abs($oldBasis - (float) $basis) >= 0.00005 : null;
         $marginMode = $this->settings->choice('domainMarginMode');
         $trigger = $this->settings->choice('domainSyncTrigger');
@@ -445,7 +452,7 @@ class DomainPriceSync
             $basis = $whmcs;
             $basisSource = 'whmcs';
             $hasBaseline = isset($state['basis']) && $state['basis'] !== null && isset($state['basis_source']) && $state['basis_source'] === 'whmcs';
-            $oldBasis = $hasBaseline ? (float) $state['basis'] : null;
+            $oldBasis = $hasBaseline ? (float) ($edited ? $state['pending_basis'] : $state['basis']) : null;
             $changed = $hasBaseline ? abs($oldBasis - $whmcs) >= 0.00005 : null;
             if (!($force || $trigger === 'always' || ($changed === null ? $this->settings->bool('domainSyncInitial') : $changed))) {
                 $saveState($current);
@@ -499,6 +506,7 @@ class DomainPriceSync
         }
         if ($mode !== 'margin' && !$this->calculator->shouldApply($current, $target)) {
             if ($hasBaseline && $oldBasis !== null) {
+                $pendingBasis = $basis;
                 $basis = $oldBasis;
             }
             $saveState($current);

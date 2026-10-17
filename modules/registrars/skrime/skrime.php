@@ -154,7 +154,8 @@ function skrime_orderDomain(array $params, $authCode)
             if (function_exists('logActivity')) {
                 logActivity('SKRIME ' . $domain . ': ' . $message);
             }
-            skrime_event($params, $domain, 'register_partial', 'Registrierung nur teilweise verlängert, bitte ' . ($years - $year) . ' Jahr(e) nachbuchen', $year . ' von ' . $years . ' Jahren', 'fehlen ' . ($years - $year));
+            skrime_storageSet(skrime_renewKey($params, $domain), json_encode(['requested' => $years, 'remaining' => $years - $year, 'at' => time()]));
+            skrime_event($params, $domain, 'register_partial', 'Registrierung nur teilweise verlängert, "Verlängern" mit gleicher Laufzeit bucht nur die fehlenden ' . ($years - $year) . ' Jahr(e)', $year . ' von ' . $years . ' Jahren', 'fehlen ' . ($years - $year));
             break;
         }
     }
@@ -220,7 +221,7 @@ function skrime_RenewDomain($params)
 
     $api = Api::fromSettings($settings);
     $domain = Helper::domainName($params);
-    $key = 'renew_pending_' . (isset($params['domainid']) ? (int) $params['domainid'] : $domain);
+    $key = skrime_renewKey($params, $domain);
     $todo = $years;
     $done = 0;
     $pending = skrime_storageGet($key);
@@ -247,11 +248,21 @@ function skrime_RenewDomain($params)
         }
     }
 
-    if ($done > 0) {
+    if ($done > 0 || is_array($pending)) {
         skrime_storageSet($key, '');
     }
 
     return ['success' => true];
+}
+
+function skrime_renewKey(array $params, $domain)
+{
+    return 'renew_pending_' . (!empty($params['domainid']) ? (int) $params['domainid'] : $domain);
+}
+
+function skrime_input($value)
+{
+    return is_string($value) ? html_entity_decode($value, ENT_QUOTES, 'UTF-8') : '';
 }
 
 function skrime_storageGet($key)
@@ -531,11 +542,11 @@ function skrime_SaveDNS($params)
 
     $records = [];
     foreach (isset($params['dnsrecords']) && is_array($params['dnsrecords']) ? $params['dnsrecords'] : [] as $record) {
-        $address = isset($record['address']) ? trim((string) $record['address']) : '';
+        $address = isset($record['address']) ? trim(skrime_input((string) $record['address'])) : '';
         if ($address === '') {
             continue;
         }
-        $name = isset($record['hostname']) ? trim((string) $record['hostname']) : '';
+        $name = isset($record['hostname']) ? trim(skrime_input((string) $record['hostname'])) : '';
         $name = $name === '' ? '@' : $name;
         $key = strtolower($name) . '|' . $address;
         if (!$settings->bool('dnsKeepUnsupported') && !empty($protected[$key])) {
@@ -1026,10 +1037,13 @@ function skrime_dnszone($params)
         if (!isset($_POST['dns_complete'])) {
             $vars['errorMessage'] = 'Die Zone wurde nicht vollständig übertragen (zu viele Einträge für die PHP-Einstellung max_input_vars). Es wurde nichts gespeichert.';
         } else {
-            $names = isset($_POST['dns_name']) && is_array($_POST['dns_name']) ? $_POST['dns_name'] : [];
-            $types = isset($_POST['dns_type']) && is_array($_POST['dns_type']) ? $_POST['dns_type'] : [];
-            $datas = isset($_POST['dns_data']) && is_array($_POST['dns_data']) ? $_POST['dns_data'] : [];
-            $priorities = isset($_POST['dns_priority']) && is_array($_POST['dns_priority']) ? $_POST['dns_priority'] : [];
+            $decode = function ($key) {
+                return isset($_POST[$key]) && is_array($_POST[$key]) ? array_map('skrime_input', $_POST[$key]) : [];
+            };
+            $names = $decode('dns_name');
+            $types = $decode('dns_type');
+            $datas = $decode('dns_data');
+            $priorities = $decode('dns_priority');
             $deletes = isset($_POST['dns_delete']) && is_array($_POST['dns_delete']) ? $_POST['dns_delete'] : [];
             $postedHash = isset($_POST['zone_hash']) ? (string) $_POST['zone_hash'] : '';
 
