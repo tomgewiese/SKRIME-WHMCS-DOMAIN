@@ -10,6 +10,9 @@ class Storage
     const TABLE_TLD = 'mod_skrime_tld_prices';
     const TABLE_DOMAIN = 'mod_skrime_domain_prices';
     const TABLE_LOG = 'mod_skrime_price_log';
+    const TABLE_EVENTS = 'mod_skrime_events';
+
+    const PRICE_MODES = ['auto', 'fixed', 'margin'];
 
     private static $schemaReady = false;
     private static $locks = [];
@@ -54,6 +57,58 @@ class Storage
                 $table->boolean('auto_renew')->nullable();
                 $table->dateTime('expire_at')->nullable();
                 $table->dateTime('updated_at')->nullable();
+            });
+        }
+
+        $domainColumns = [
+            'product_state' => function ($table) {
+                $table->string('product_state', 32)->default('');
+            },
+            'expiry_mismatch' => function ($table) {
+                $table->string('expiry_mismatch', 32)->default('');
+            },
+            'price_mode' => function ($table) {
+                $table->string('price_mode', 16)->default('auto');
+            },
+            'margin_percent' => function ($table) {
+                $table->decimal('margin_percent', 8, 2)->nullable();
+            },
+            'margin_fixed' => function ($table) {
+                $table->decimal('margin_fixed', 12, 2)->nullable();
+            },
+            'last_price' => function ($table) {
+                $table->decimal('last_price', 12, 2)->nullable();
+            },
+            'last_margin' => function ($table) {
+                $table->decimal('last_margin', 12, 2)->nullable();
+            },
+            'last_currency' => function ($table) {
+                $table->string('last_currency', 8)->default('');
+            },
+            'checked_at' => function ($table) {
+                $table->dateTime('checked_at')->nullable();
+            },
+        ];
+        foreach ($domainColumns as $column => $definition) {
+            if (!$schema->hasColumn(self::TABLE_DOMAIN, $column)) {
+                $schema->table(self::TABLE_DOMAIN, $definition);
+            }
+        }
+
+        if (!$schema->hasTable(self::TABLE_EVENTS)) {
+            $schema->create(self::TABLE_EVENTS, function ($table) {
+                $table->increments('id');
+                $table->unsignedInteger('domain_id')->default(0);
+                $table->string('domain', 191)->default('');
+                $table->string('type', 32);
+                $table->string('message', 191)->default('');
+                $table->string('old_value', 191)->default('');
+                $table->string('new_value', 191)->default('');
+                $table->boolean('attention')->default(false);
+                $table->boolean('acknowledged')->default(false);
+                $table->dateTime('created_at')->nullable();
+                $table->index('domain_id');
+                $table->index('created_at');
             });
         }
 
@@ -221,7 +276,7 @@ class Storage
         }
     }
 
-    public static function rememberProduct($domainId, $domain, $product)
+    public static function rememberProduct($domainId, $domain, $product, $priceField = 'price', array $extra = [])
     {
         if (!is_array($product) || (int) $domainId <= 0) {
             return;
@@ -229,12 +284,93 @@ class Storage
         $data = [
             'domain' => substr((string) $domain, 0, 191),
             'product_id' => isset($product['id']) && is_scalar($product['id']) ? substr((string) $product['id'], 0, 64) : '',
-            'product_price' => isset($product['price']) && is_numeric($product['price']) ? (float) $product['price'] : null,
+            'product_price' => Helper::productCost($product, $priceField),
             'product_duration' => isset($product['duration']) && is_numeric($product['duration']) ? (int) $product['duration'] : null,
             'auto_renew' => isset($product['autoRenew']) ? ($product['autoRenew'] ? 1 : 0) : null,
             'expire_at' => isset($product['expireAt']) && Helper::toDate($product['expireAt']) ? date('Y-m-d H:i:s', strtotime($product['expireAt'])) : null,
+            'product_state' => isset($product['state']) && is_scalar($product['state']) ? substr(strtolower(trim((string) $product['state'])), 0, 32) : '',
+            'checked_at' => self::now(),
         ];
-        self::saveDomainState($domainId, $data);
+        self::saveDomainState($domainId, array_merge($data, $extra));
+    }
+
+    public static function setPriceMode($domainId, $mode, $marginPercent = null, $marginFixed = null)
+    {
+        if (!in_array($mode, self::PRICE_MODES, true)) {
+            $mode = 'auto';
+        }
+        self::saveDomainState($domainId, [
+            'price_mode' => $mode,
+            'margin_percent' => $mode === 'margin' && $marginPercent !== null ? round((float) $marginPercent, 2) : null,
+            'margin_fixed' => $mode === 'margin' && $marginFixed !== null ? round((float) $marginFixed, 2) : null,
+        ]);
+    }
+
+    public static function addEvent($domainId, $domain, $type, $message, $old = '', $new = '', $attention = false)
+    {
+        self::ensureSchema();
+
+        return Capsule::table(self::TABLE_EVENTS)->insertGetId([
+            'domain_id' => max(0, (int) $domainId),
+            'domain' => substr((string) $domain, 0, 191),
+            'type' => substr((string) $type, 0, 32),
+            'message' => substr((string) $message, 0, 191),
+            'old_value' => substr((string) $old, 0, 191),
+            'new_value' => substr((string) $new, 0, 191),
+            'attention' => $attention ? 1 : 0,
+            'acknowledged' => 0,
+            'created_at' => self::now(),
+        ]);
+    }
+
+    public static function domainEvents($domainId, $limit = 10)
+    {
+        self::ensureSchema();
+
+        return Capsule::table(self::TABLE_EVENTS)
+            ->where('domain_id', (int) $domainId)
+            ->orderBy('id', 'desc')
+            ->limit((int) $limit)
+            ->get();
+    }
+
+    public static function recentEvents($limit = 10)
+    {
+        self::ensureSchema();
+
+        return Capsule::table(self::TABLE_EVENTS)->orderBy('id', 'desc')->limit((int) $limit)->get();
+    }
+
+    public static function openEvents($limit = 10)
+    {
+        self::ensureSchema();
+
+        return Capsule::table(self::TABLE_EVENTS)
+            ->where('attention', 1)
+            ->where('acknowledged', 0)
+            ->orderBy('id', 'desc')
+            ->limit((int) $limit)
+            ->get();
+    }
+
+    public static function openEventCount($domainId = null)
+    {
+        self::ensureSchema();
+        $query = Capsule::table(self::TABLE_EVENTS)->where('attention', 1)->where('acknowledged', 0);
+        if ($domainId !== null) {
+            $query->where('domain_id', (int) $domainId);
+        }
+
+        return (int) $query->count();
+    }
+
+    public static function acknowledgeEvents($domainId)
+    {
+        self::ensureSchema();
+        Capsule::table(self::TABLE_EVENTS)
+            ->where('domain_id', (int) $domainId)
+            ->where('acknowledged', 0)
+            ->update(['acknowledged' => 1]);
     }
 
     public static function log($type, $reference, $detail, $currency, $oldPrice, $newPrice, $oldCost = null, $newCost = null)
@@ -274,6 +410,8 @@ class Storage
             return;
         }
         self::ensureSchema();
-        Capsule::table(self::TABLE_LOG)->where('created_at', '<', date('Y-m-d H:i:s', time() - $days * 86400))->delete();
+        $limit = date('Y-m-d H:i:s', time() - $days * 86400);
+        Capsule::table(self::TABLE_LOG)->where('created_at', '<', $limit)->delete();
+        Capsule::table(self::TABLE_EVENTS)->where('created_at', '<', $limit)->delete();
     }
 }

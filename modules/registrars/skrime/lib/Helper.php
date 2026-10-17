@@ -234,7 +234,7 @@ class Helper
         return $list;
     }
 
-    public static function productYearlyCost($product, $field = 'price')
+    public static function productCost($product, $field = 'price')
     {
         if (!is_array($product)) {
             return null;
@@ -246,19 +246,8 @@ class Helper
         } elseif (isset($product['price']) && is_numeric($product['price'])) {
             $price = (float) $product['price'];
         }
-        if ($price === null || $price <= 0) {
-            return null;
-        }
 
-        $months = isset($product['duration']) && is_numeric($product['duration']) ? (float) $product['duration'] : 0.0;
-        if ($months <= 0 && isset($product['days']) && is_numeric($product['days']) && (float) $product['days'] > 0) {
-            $months = (float) $product['days'] / 365 * 12;
-        }
-        if ($months <= 0) {
-            $months = 12.0;
-        }
-
-        return round($price * 12 / $months, 4);
+        return $price === null || $price <= 0 ? null : round($price, 4);
     }
 
     public static function productStatus($product)

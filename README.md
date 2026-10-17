@@ -35,19 +35,19 @@ This module allows the integration of SKRIME's domain registration service into 
 
 - Replace the files in `/modules/registrars/skrime/` and copy `/includes/hooks/skrime.php`.
 - Open `System Settings` > `Domain Registrars` > `SKRIME` and save the configuration once so the new settings are stored.
-- Your API key is kept. The automatic price updates (TLD-Sync, Domain-Sync) stay disabled until you enable them.
-- Active by default and configurable: DNSSEC in the client area, WHOIS privacy after ordering (only if ID protection was booked), premium domains shown as unavailable, protection of DNS records WHMCS cannot display, company name cleaning on orders, the dashboard widget.
+- Your API key is kept. The automatic syncs (TLD-Sync, Produkt-Sync) stay disabled until you enable them.
+- Active by default and configurable: the SKRIME DNS editor and DNSSEC in the client area, WHOIS privacy after ordering (only if ID protection was booked), premium domains shown as unavailable, company name cleaning on orders, the dashboard widget, the SKRIME fields in the admin domain tab.
 - Always active: transfer synchronisation and the status synchronisation (expired/cancelled/transferred).
-- Multi-year registrations and renewals are rejected with an error by default, because SKRIME registers and renews one year per request. Set "Mehrjährige Laufzeiten" to "Weitere Jahre per Verlängerung buchen" to book additional years via renewals. Transfers are always one year.
+- SKRIME renews a domain by exactly 12 months per `product/renew` call. Multi-year registrations and renewals are booked as several renewals (one per additional year). This can be switched to "reject" in "Mehrjährige Laufzeiten". Transfers are always one year.
 
 ## Features
 
 - **Domain Registration & Transfer:** Register and transfer domains through SKRIME. Missing nameservers are filled up with configurable default nameservers (SKRIME requires 2 to 6).
 - **Domain Renewal:** Renew existing domains.
-- **Multi-year terms:** Rejected or booked as additional renewals (configurable).
+- **Multi-year terms:** Booked as one `product/renew` call per additional year (12 months each) or rejected (configurable).
 - **Nameserver Management:** Read and update nameservers.
 - **Contact Management:** Read and update the registrant contact (house number handling included).
-- **DNS Management:** Manage the DNS zone. MX priorities are supported. Records WHMCS cannot display (SRV, CAA, TLSA, DS, ...) are hidden and preserved when saving.
+- **DNS Management:** Own SKRIME DNS editor in the client area with all SKRIME record types (A, AAAA, CNAME, ALIAS, MX, SRV, TXT, CAA, PTR, TLSA, DS, DNSKEY). The WHMCS DNS page redirects to it. Alternatively the WHMCS standard page can be used; types SKRIME does not support (URL, FRAME, MXE) are then hidden.
 - **DNSSEC:** Clients can enable, change and disable DNSSEC (DNSKEY) in the client area.
 - **WHOIS Privacy:** ID protection toggles the SKRIME WHOIS privacy. Optionally enabled directly after registration/transfer.
 - **EPP Code:** Retrieve the auth code.
@@ -55,8 +55,10 @@ This module allows the integration of SKRIME's domain registration service into 
 - **Domain Sync & Transfer Sync:** Expiry date and status synchronisation, completion of incoming transfers.
 - **TLD Pricing Import:** WHMCS TLD & pricing sync (Utilities > Registrar TLD Sync). Imports one-year terms unless multi-year terms are booked via renewals.
 - **Automatic TLD Price Update:** Updates register, transfer, renewal and optionally redemption prices from the SKRIME pricelist.
-- **Automatic Domain Price Update:** Updates the recurring amount of existing domains when the price of the individual SKRIME product (the domain) changes.
-- **Admin Tools:** Admin buttons on the domain page, a dashboard widget, a price change log and admin/client notifications.
+- **Daily Product Sync:** Compares every SKRIME domain with its SKRIME product (`product/single` / `product/all`): purchase price, expiry date, status and auto renewal. Every change is logged.
+- **Automatic Domain Price Update:** When the purchase price of a product changes, the renewal price of the domain is adjusted and the previous margin is kept.
+- **Prices per domain:** In the admin domain tab every domain can follow the module settings, keep a fixed price that is never synced, or use its own margin.
+- **Admin Tools:** SKRIME fields in the admin domain tab, admin buttons, a dashboard widget with open notices, a price and change log and admin/client notifications.
 
 ## Automatic Price Updates
 
@@ -79,41 +81,62 @@ Updates `domainregister`, `domaintransfer` and `domainrenew` pricing of your TLD
 - Scope: only TLDs with SKRIME as auto registrar, all existing TLDs, or all TLDs including automatic creation of missing ones.
 - Trigger: only when the SKRIME price changed (manual changes stay until the next SKRIME price change) or enforce on every run.
 - Include/exclude lists, client group pricing stays untouched unless enabled.
-- Maximum term (default 1 year): terms above it are disabled. Disabled terms (`-1`) up to the maximum stay disabled unless enabled. Multi-year register prices are calculated as first year plus renewal price for every further year. Transfer prices are maintained for one year only.
+- Maximum term (default 10 years): terms above it are disabled. Disabled terms (`-1`) up to the maximum stay disabled unless enabled. Multi-year register prices are calculated as first year plus renewal price for every further year. Transfer prices are maintained for one year only.
 - A failed pricelist download is retried after 15 minutes.
 - Offers (`offer` in the pricelist): apply the offer price, use the regular renewal price as basis, or do not change the affected prices.
 
-### Domain price sync (existing domains)
+### Product sync (existing domains)
 
-Updates the recurring amount (`recurringamount`) of existing SKRIME domains.
+Runs daily (configurable) for every SKRIME domain and uses the SKRIME product of the domain, not the pricelist. The product price is the price for one renewal of 12 months. It can differ from the pricelist, for example when SKRIME uses a different or cheaper upstream registrar; the end customer never sees the purchase price.
 
-- Price source:
-    - **SKRIME product price** of the individual domain (recommended). The price of the product is normalised to one year (`price` / `duration`).
-    - Product price with fallback to the SKRIME pricelist.
-    - SKRIME pricelist renewal price.
-    - WHMCS TLD renewal price (use together with the TLD price sync).
-- Trigger: only when the source price changed (the first run stores the current SKRIME price as baseline unless "apply on first run" is enabled) or enforce on every run.
-- Runs in batches (configurable) and optionally during the regular WHMCS domain sync of each domain.
-- Domain addons (DNS management, email forwarding, ID protection) are added to the recurring amount.
-- Domains with promotion codes, free domains (recurring amount 0), premium domains, domains set to "do not renew" and clients whose client group has its own TLD pricing can be skipped. The WHMCS TLD source uses the client group price.
-- With "Preis: Währungen = Nur EUR" only clients with the EUR currency are updated.
+What is compared and logged:
+
+| Change | Logged as | Needs attention |
+| --- | --- | --- |
+| Purchase price of the product | Einkaufspreis | Only if prices are not adjusted automatically or the domain has a fixed price |
+| Renewal price adjusted | Verkaufspreis | No |
+| Expiry date at SKRIME | Ablaufdatum | No |
+| Expiry date in WHMCS differs from SKRIME | Ablaufdatum abweichend | Yes (or adjusted automatically with "Ablaufdatum übernehmen") |
+| Status at SKRIME (e.g. expired) | Status | Yes, if not active |
+| Auto renewal active at SKRIME | Auto-Verlängerung | Yes (WHMCS renews as well) |
+| Product missing at SKRIME | Nicht gefunden | Yes |
+
+The log is shown in the admin domain tab ("SKRIME Änderungen", open notices can be marked as done), in the dashboard widget and in the admin summary email.
+
+Price adjustment when the purchase price changes ("Produkt-Sync: Marge"):
+
+- **Keep margin (amount, default):** The margin (renewal price − purchase price) is stored for every domain. The new price is the new purchase price plus the same margin. Example: 15,00 sold, 4,00 purchase → margin 11,00; purchase 5,00 → new price 16,00.
+- **Keep margin (percent):** The price changes by the same factor as the purchase price.
+- **Recalculate:** Margin, minimum profit and rounding from the module settings.
+
+Price mode per domain (admin domain tab, "SKRIME Preis-Modus"):
+
+- **Automatisch:** Follows the module settings.
+- **Fester Preis:** The recurring amount set in WHMCS is never changed. A purchase price change is reported as a notice.
+- **Eigene Marge:** Purchase price + own percentage + own fixed amount (EUR), rounded like all prices. Applied immediately when saved and on every sync.
+
+Further options:
+
+- Price source: SKRIME product (recommended), product with fallback to the pricelist, pricelist, or WHMCS TLD renewal price.
+- Domain addons (DNS management, email forwarding, ID protection) stay part of the recurring amount.
+- Domains with promotion codes, free domains, premium domains, domains set to "do not renew" and clients whose client group has its own TLD pricing are skipped in automatic mode (configurable).
+- Price increases, price decreases and a minimum change in percent can be limited.
+- Optional client notification via a domain email template. Merge fields: `{$skrime_old_price}`, `{$skrime_new_price}`, `{$skrime_currency}`.
 - If the SKRIME API is unreachable the batch stops and continues with the next cron run.
-- Price increases, price decreases and a minimum change in percent can be configured.
-- Optional client notification via a domain email template. Available merge fields: `{$skrime_old_price}`, `{$skrime_new_price}`, `{$skrime_currency}`.
 
 ### Manual runs
 
 On the admin domain page the following buttons are available:
 
 - `SKRIME: Domainpreis abgleichen` (this domain)
-- `SKRIME: Alle Domainpreise abgleichen` (all domains, up to 120 seconds, the rest is continued by the cron even if the Domain-Sync is disabled)
+- `SKRIME: Alle Domainpreise abgleichen` (all domains, up to 120 seconds, the rest is continued by the cron even if the Produkt-Sync is disabled)
 - `SKRIME: TLD-Preise abgleichen` (all TLDs)
 
 Manual runs ignore the interval and the trigger but still respect the price rules (increase/decrease/minimum change).
 
 ### Log & notifications
 
-All price changes are written to the table `mod_skrime_price_log` and shown in the dashboard widget. Administrators receive one summary email per cron run if changes were made. The module stores its state in the tables `mod_skrime_kv`, `mod_skrime_tld_prices`, `mod_skrime_domain_prices` and `mod_skrime_price_log`, which are created automatically.
+All price changes are written to `mod_skrime_price_log`, all product changes to `mod_skrime_events`. Both are shown in the dashboard widget and the admin domain tab. Administrators receive one summary email per cron run if something changed. The module stores its state in the tables `mod_skrime_kv`, `mod_skrime_tld_prices`, `mod_skrime_domain_prices`, `mod_skrime_price_log` and `mod_skrime_events`, which are created and updated automatically.
 
 ## Settings
 
@@ -127,15 +150,16 @@ All price changes are written to the table `mod_skrime_price_log` and shown in t
 | Mehrjährige Laufzeiten | Reject registration/renewal terms above 1 year or book further years via renewals |
 | WHOIS-Privacy bei Bestellung / Felder | WHOIS privacy after ordering and the fields to hide |
 | Sync: Fehlende Domains kündigen | Mark domains missing at SKRIME as cancelled |
+| DNS: Editor im Kundenbereich | SKRIME DNS editor (all SKRIME types) or WHMCS standard page with unsupported types hidden |
 | DNS: MX/SRV-Priorität | Send the priority inside the data field or as separate field |
-| DNS: Erweiterte Records schützen | Hide and preserve records WHMCS cannot display |
+| DNS: Erweiterte Records schützen | WHMCS standard page only: hide and preserve records WHMCS cannot display |
 | DNSSEC im Kundenbereich | Enable the DNSSEC page for clients |
 | TLD-Sync: ... | Enable, interval, trigger, first run, scope, include/exclude, price types, redemption fee, maximum term, disabled terms, client groups |
 | Aktionspreise | Handling of SKRIME offers |
 | Preis: ... | Margins (general and per type), minimum profit, minimum price, rounding, increases, decreases, minimum change, currencies |
-| Domain-Sync: ... | Enable, price source, trigger, first run, interval, during WHMCS domain sync, bulk request, batch size, product price field, margin, addons, statuses, skip rules |
+| Produkt-Sync: ... | Enable, adjust prices, margin handling, purchase price source, take over expiry dates, trigger, first run, interval, during WHMCS domain sync, bulk request, batch size, product price field, margin for recalculation, addons, statuses, skip rules |
 | Benachrichtigung: ... | Admin summary, client email template, only on increases |
-| Protokoll: Aufbewahrung | Retention of the price log in days |
+| Protokoll: Aufbewahrung | Retention of the price and change log in days |
 | Dashboard-Widget | Show the SKRIME widget on the admin dashboard |
 
 ## Development

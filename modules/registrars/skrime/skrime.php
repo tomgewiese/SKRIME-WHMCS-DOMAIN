@@ -162,16 +162,12 @@ function skrime_rememberOrder(array $params, Settings $settings, $domain, $produ
         return;
     }
     try {
-        Storage::rememberProduct((int) $params['domainid'], $domain, $product);
-        if (in_array($settings->choice('domainSyncSource'), ['product', 'product_pricelist'], true)) {
-            $basis = Helper::productYearlyCost($product, $settings->choice('domainSyncPriceField'));
-            if ($basis !== null) {
-                Storage::saveDomainState((int) $params['domainid'], [
-                    'basis' => $basis,
-                    'basis_source' => 'product',
-                ]);
-            }
-        }
+        $expire = isset($product['expireAt']) ? Helper::toDate($product['expireAt']) : null;
+        Storage::saveDomainState((int) $params['domainid'], [
+            'domain' => substr((string) $domain, 0, 191),
+            'product_id' => isset($product['id']) && is_scalar($product['id']) ? substr((string) $product['id'], 0, 64) : '',
+            'expire_at' => $expire !== null ? $expire . ' 00:00:00' : null,
+        ]);
     } catch (\Throwable $e) {
         if (function_exists('logActivity')) {
             logActivity('SKRIME Produktdaten für ' . $domain . ' konnten nicht gespeichert werden: ' . $e->getMessage());
@@ -790,11 +786,187 @@ function skrime_ClientAreaCustomButtonArray($params = [])
     $settings = is_array($params) && array_key_exists('apiKey', $params)
         ? Settings::fromParams($params)
         : Settings::fromRegistrar();
-    if (!$settings || !$settings->bool('dnssecClientArea')) {
+    if (!$settings) {
         return [];
     }
+    $buttons = [];
+    if ($settings->choice('dnsEditor') === 'skrime') {
+        $buttons['DNS-Verwaltung'] = 'dnszone';
+    }
+    if ($settings->bool('dnssecClientArea')) {
+        $buttons['DNSSEC'] = 'dnssec';
+    }
 
-    return ['DNSSEC' => 'dnssec'];
+    return $buttons;
+}
+
+function skrime_dnsRows(array $records, $fieldMode)
+{
+    $rows = [];
+    foreach ($records as $record) {
+        if (!is_array($record)) {
+            continue;
+        }
+        $type = strtoupper(isset($record['type']) ? (string) $record['type'] : '');
+        $data = isset($record['data']) ? (string) $record['data'] : '';
+        $priority = '';
+        if (in_array($type, ['MX', 'SRV'], true)) {
+            if ($fieldMode && isset($record['priority']) && $record['priority'] !== '') {
+                $priority = (string) $record['priority'];
+            } elseif (preg_match('/^(\d+)\s+(.+)$/', trim($data), $matches)) {
+                $priority = $matches[1];
+                $data = $matches[2];
+            }
+        }
+        $rows[] = [
+            'name' => isset($record['name']) && (string) $record['name'] !== '' ? (string) $record['name'] : '@',
+            'type' => $type,
+            'data' => $data,
+            'priority' => $priority,
+        ];
+    }
+
+    return $rows;
+}
+
+function skrime_dnsRecord($name, $type, $data, $priority, $fieldMode)
+{
+    $name = trim((string) $name);
+    $name = $name === '' ? '@' : $name;
+    $type = strtoupper(trim((string) $type));
+    $data = trim((string) $data);
+    $priority = trim((string) $priority);
+
+    if (!in_array($type, SKRIME_API_DNS_TYPES, true)) {
+        return [null, 'Der Record-Typ ' . $type . ' wird nicht unterstützt.'];
+    }
+    if (!preg_match('/^[A-Za-z0-9_.*@-]+$/', $name)) {
+        return [null, 'Ungültiger Name "' . $name . '".'];
+    }
+    if ($data === '') {
+        return [null, 'Für ' . $name . ' (' . $type . ') fehlt der Wert.'];
+    }
+    if ($type === 'A' && filter_var($data, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false) {
+        return [null, '"' . $data . '" ist keine gültige IPv4-Adresse.'];
+    }
+    if ($type === 'AAAA' && filter_var($data, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) === false) {
+        return [null, '"' . $data . '" ist keine gültige IPv6-Adresse.'];
+    }
+
+    $record = ['name' => $name, 'type' => $type, 'data' => $data];
+    if (in_array($type, ['MX', 'SRV'], true)) {
+        if ($priority === '' && !preg_match('/^\d+\s+/', $data)) {
+            $priority = '10';
+        }
+        if ($priority !== '' && !ctype_digit($priority)) {
+            return [null, 'Ungültige Priorität für ' . $name . ' (' . $type . ').'];
+        }
+        if ($priority !== '') {
+            if ($fieldMode) {
+                $record['priority'] = (int) $priority;
+            } else {
+                $record['data'] = (int) $priority . ' ' . $data;
+            }
+        }
+    }
+
+    return [$record, null];
+}
+
+function skrime_dnszone($params)
+{
+    $settings = Settings::fromParams($params);
+    $fieldMode = $settings->choice('dnsMxMode') === 'field';
+    $domain = Helper::domainName($params);
+    $domainId = isset($params['domainid']) ? (int) $params['domainid'] : 0;
+    $vars = [
+        'domain' => $domain,
+        'domainid' => $domainId,
+        'types' => SKRIME_API_DNS_TYPES,
+        'rows' => [],
+        'newRows' => 3,
+        'successMessage' => '',
+        'errorMessage' => '',
+        'enabled' => $settings->choice('dnsEditor') === 'skrime',
+    ];
+    $output = function () use (&$vars, $domainId) {
+        return [
+            'templatefile' => 'dnszone',
+            'breadcrumb' => [
+                'clientarea.php?action=domaindetails&id=' . $domainId . '&modop=custom&a=dnszone' => 'DNS-Verwaltung',
+            ],
+            'vars' => $vars,
+        ];
+    };
+
+    if (!$vars['enabled']) {
+        $vars['errorMessage'] = 'Der SKRIME DNS-Editor ist deaktiviert.';
+
+        return $output();
+    }
+
+    $api = Api::fromSettings($settings);
+    $method = isset($_SERVER['REQUEST_METHOD']) ? strtoupper($_SERVER['REQUEST_METHOD']) : 'GET';
+    $posted = null;
+
+    if ($method === 'POST' && isset($_POST['skrime_action']) && $_POST['skrime_action'] === 'savezone') {
+        if (function_exists('check_token')) {
+            check_token('WHMCS.default');
+        }
+        $names = isset($_POST['dns_name']) && is_array($_POST['dns_name']) ? $_POST['dns_name'] : [];
+        $types = isset($_POST['dns_type']) && is_array($_POST['dns_type']) ? $_POST['dns_type'] : [];
+        $datas = isset($_POST['dns_data']) && is_array($_POST['dns_data']) ? $_POST['dns_data'] : [];
+        $priorities = isset($_POST['dns_priority']) && is_array($_POST['dns_priority']) ? $_POST['dns_priority'] : [];
+        $deletes = isset($_POST['dns_delete']) && is_array($_POST['dns_delete']) ? $_POST['dns_delete'] : [];
+
+        $records = [];
+        $errors = [];
+        $posted = [];
+        foreach ($names as $index => $name) {
+            $data = isset($datas[$index]) ? (string) $datas[$index] : '';
+            $type = isset($types[$index]) ? (string) $types[$index] : '';
+            $priority = isset($priorities[$index]) ? (string) $priorities[$index] : '';
+            if (isset($deletes[$index]) || trim($data) === '') {
+                continue;
+            }
+            $posted[] = ['name' => (string) $name, 'type' => strtoupper($type), 'data' => $data, 'priority' => $priority];
+            list($record, $error) = skrime_dnsRecord($name, $type, $data, $priority, $fieldMode);
+            if ($error !== null) {
+                $errors[] = $error;
+                continue;
+            }
+            $records[] = $record;
+        }
+
+        if (!empty($errors)) {
+            $vars['errorMessage'] = implode(' ', array_slice($errors, 0, 10));
+            $vars['rows'] = $posted;
+
+            return $output();
+        }
+
+        try {
+            $api->call('POST', 'domain/dns', ['domain' => $domain, 'records' => $records]);
+            $vars['successMessage'] = 'Die DNS-Zone wurde gespeichert.';
+        } catch (\Throwable $e) {
+            $vars['errorMessage'] = $e->getMessage();
+            $vars['rows'] = $posted;
+
+            return $output();
+        }
+    }
+
+    try {
+        $zone = $api->call('GET', 'domain/dns', ['domain' => $domain]);
+        $vars['rows'] = skrime_dnsRows(isset($zone['records']) && is_array($zone['records']) ? $zone['records'] : [], $fieldMode);
+    } catch (\Throwable $e) {
+        $notFound = $e instanceof ApiException && $e->isNotFound();
+        if (!$notFound && $vars['errorMessage'] === '') {
+            $vars['errorMessage'] = $e->getMessage();
+        }
+    }
+
+    return $output();
 }
 
 function skrime_dnssec($params)

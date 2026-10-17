@@ -31,6 +31,7 @@ class WHMCSSampleRegistrarModuleTest extends TestCase
             'SyncTldPrices',
             'ClientAreaCustomButtonArray',
             'dnssec',
+            'dnszone',
         ];
 
         foreach ($functions as $function) {

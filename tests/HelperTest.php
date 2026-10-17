@@ -61,8 +61,9 @@ class HelperTest extends TestCase
     {
         $product = ['productInfo' => ['domain' => 'Example.DE'], 'price' => '7.00', 'duration' => '24', 'priceBeforeDiscount' => '8.00', 'state' => 'active'];
         $this->assertSame('example.de', Helper::productDomain($product));
-        $this->assertEqualsWithDelta(3.5, Helper::productYearlyCost($product), 0.0001);
-        $this->assertEqualsWithDelta(4.0, Helper::productYearlyCost($product, 'priceBeforeDiscount'), 0.0001);
+        $this->assertEqualsWithDelta(7.0, Helper::productCost($product), 0.0001);
+        $this->assertEqualsWithDelta(8.0, Helper::productCost($product, 'priceBeforeDiscount'), 0.0001);
+        $this->assertNull(Helper::productCost(['price' => '0.00']));
         $this->assertSame([$product], Helper::productList([$product, ['foo' => 'bar']]));
         $this->assertSame('active', Helper::productStatus($product));
         $this->assertSame('cancelled', Helper::productStatus(['state' => 'deleted']));
