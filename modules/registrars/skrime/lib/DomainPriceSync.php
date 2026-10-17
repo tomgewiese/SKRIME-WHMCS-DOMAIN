@@ -23,6 +23,8 @@ class DomainPriceSync
     private $groupPricing = [];
     private $hasUpdatedAt;
     private $transportFailure = false;
+    private $pendingCost;
+    private $notApplied;
 
     public function __construct(Settings $settings, ?Api $api = null)
     {
@@ -225,10 +227,43 @@ class DomainPriceSync
             return 'Domain bei SKRIME nicht gefunden';
         }
 
+        $this->pendingCost = null;
+        $this->notApplied = null;
         $this->trackProduct($row, $domain, $product, $state, $report);
         $state = Storage::domainState((int) $row->id) ?: [];
 
-        return $this->updatePrice($row, $domain, $product, $state, $force, $report);
+        try {
+            $result = $this->updatePrice($row, $domain, $product, $state, $force, $report);
+        } catch (\Throwable $e) {
+            $this->notApplied = 'Fehler: ' . $e->getMessage();
+            $this->recordCostEvent($row, $domain, $report);
+            throw $e;
+        }
+        if ($result !== 'changed' && $result !== 'unchanged' && $this->notApplied === null) {
+            $this->notApplied = $result;
+        }
+        $this->recordCostEvent($row, $domain, $report);
+
+        return $result;
+    }
+
+    private function recordCostEvent($row, $domain, Report $report)
+    {
+        if ($this->pendingCost === null) {
+            return;
+        }
+        $state = Storage::domainState((int) $row->id) ?: [];
+        $negative = isset($state['last_margin']) && $state['last_margin'] !== null && (float) $state['last_margin'] < 0;
+        $attention = $this->notApplied !== null || $negative;
+        $message = 'Einkaufspreis geändert';
+        if ($this->notApplied !== null) {
+            $message .= ', Verkaufspreis nicht angepasst: ' . $this->notApplied;
+        } elseif ($negative) {
+            $message .= ', Marge ist negativ';
+        }
+        Storage::addEvent((int) $row->id, $domain, 'cost', $message, $this->pendingCost[0], $this->pendingCost[1], $attention);
+        $report->count('Hinweise');
+        $this->pendingCost = null;
     }
 
     private function trackProduct($row, $domain, array $product, array $state, Report $report)
@@ -260,26 +295,25 @@ class DomainPriceSync
             $events[] = ['autorenew', 'Auto-Verlängerung bei SKRIME aktiv, WHMCS verlängert ebenfalls', $oldAuto === null ? '' : 'aus', 'an', true];
         }
         if ($known && $oldCost !== null && $newCost !== null && abs($oldCost - $newCost) >= 0.005) {
-            $priceHandled = $this->settings->bool('domainPriceUpdate') && $mode !== 'fixed';
-            $events[] = [
-                'cost',
-                $priceHandled ? 'Einkaufspreis geändert' : 'Einkaufspreis geändert, Verkaufspreis bitte prüfen',
-                Helper::formatAmount($oldCost) . ' EUR',
-                Helper::formatAmount($newCost) . ' EUR',
-                !$priceHandled,
-            ];
+            $this->pendingCost = [Helper::formatAmount($oldCost) . ' EUR', Helper::formatAmount($newCost) . ' EUR'];
         }
 
         $extra = [];
         $whmcsExpiry = Helper::toDate(isset($row->expirydate) ? (string) $row->expirydate : '');
         $mismatch = isset($state['expiry_mismatch']) ? (string) $state['expiry_mismatch'] : '';
-        if ($newExpire !== null && $whmcsExpiry !== null && $newExpire !== $whmcsExpiry) {
+        if ($newExpire !== null && $newExpire !== $whmcsExpiry) {
             if ($this->settings->bool('syncExpiryToWhmcs')) {
                 Capsule::table('tbldomains')->where('id', (int) $row->id)->update(['expirydate' => $newExpire]);
-                $events[] = ['expiry_sync', 'Ablaufdatum in WHMCS an SKRIME angepasst', $whmcsExpiry, $newExpire, false];
+                $events[] = ['expiry_sync', 'Ablaufdatum in WHMCS an SKRIME angepasst', $whmcsExpiry === null ? '-' : $whmcsExpiry, $newExpire, false];
                 $extra['expiry_mismatch'] = '';
             } elseif ($mismatch !== $newExpire) {
-                $events[] = ['expiry_mismatch', 'Ablaufdatum in WHMCS weicht von SKRIME ab', 'WHMCS ' . $whmcsExpiry, 'SKRIME ' . $newExpire, true];
+                $events[] = [
+                    'expiry_mismatch',
+                    $whmcsExpiry === null ? 'Ablaufdatum in WHMCS fehlt' : 'Ablaufdatum in WHMCS weicht von SKRIME ab',
+                    'WHMCS ' . ($whmcsExpiry === null ? '-' : $whmcsExpiry),
+                    'SKRIME ' . $newExpire,
+                    true,
+                ];
                 $extra['expiry_mismatch'] = $newExpire;
             }
         } elseif ($mismatch !== '') {
@@ -315,6 +349,9 @@ class DomainPriceSync
             $basisSource = 'pricelist';
         }
         $costForMargin = $productCost !== null ? $productCost : ($basisSource === 'pricelist' ? $basis : null);
+        if ($this->pendingCost !== null && $mode === 'auto' && $basisSource !== 'product') {
+            $this->notApplied = 'Preisquelle ist nicht der Produktpreis';
+        }
 
         $saveState = function ($price) use ($row, $domain, &$basis, &$basisSource, $currency, $period, $addons, $costForMargin) {
             $data = [
@@ -331,48 +368,51 @@ class DomainPriceSync
             }
             Storage::saveDomainState((int) $row->id, $data);
         };
+        $skipWith = function ($reason, $notApplied = null) use ($saveState, $current) {
+            $saveState($current);
+            $this->notApplied = $notApplied === null ? $reason : $notApplied;
+
+            return $reason;
+        };
 
         if ($mode === 'fixed') {
             $saveState($current);
+            $this->notApplied = 'Fester Preis';
 
             return 'unchanged';
         }
-        if (!$this->settings->bool('domainPriceUpdate') && !$force) {
+        if ($mode !== 'margin' && !$this->settings->bool('domainPriceUpdate') && !$force) {
             $saveState($current);
+            $this->notApplied = 'Automatische Anpassung deaktiviert';
 
             return 'unchanged';
         }
-        $skip = null;
         if ($mode === 'auto') {
             if ($this->settings->bool('domainSkipPremium') && !empty($row->is_premium)) {
-                $skip = 'Premium-Domain übersprungen';
-            } elseif ($this->settings->bool('domainSkipPromo') && (int) $row->promoid > 0) {
-                $skip = 'Domain mit Promo-Code übersprungen';
-            } elseif ($this->settings->bool('domainSkipFree') && $current <= 0) {
-                $skip = 'Kostenlose Domain übersprungen';
-            } elseif ($this->settings->bool('domainSkipDoNotRenew') && !empty($row->donotrenew)) {
-                $skip = 'Domain "Nicht verlängern" übersprungen';
+                return $skipWith('Premium-Domain übersprungen');
+            }
+            if ($this->settings->bool('domainSkipPromo') && (int) $row->promoid > 0) {
+                return $skipWith('Domain mit Promo-Code übersprungen');
+            }
+            if ($this->settings->bool('domainSkipFree') && $current <= 0) {
+                return $skipWith('Kostenlose Domain übersprungen');
+            }
+            if ($this->settings->bool('domainSkipDoNotRenew') && !empty($row->donotrenew)) {
+                return $skipWith('Domain "Nicht verlängern" übersprungen');
             }
         }
-        if ($skip !== null) {
-            $saveState($current);
-
-            return $skip;
-        }
         if (!$currency || $currency['factor'] === null) {
-            return 'Keine Umrechnung für die Kundenwährung möglich';
-        }
-        if ($source !== 'whmcs' && !$this->currencies()->isTarget($currency['id'])) {
-            $saveState($current);
+            $this->notApplied = 'Keine Umrechnung für die Kundenwährung möglich';
 
-            return 'Währung ' . $currency['code'] . ' ist vom Preisabgleich ausgeschlossen';
+            return $this->notApplied;
+        }
+        if ($mode === 'auto' && $source !== 'whmcs' && !$this->currencies()->isTarget($currency['id'])) {
+            return $skipWith('Währung ' . $currency['code'] . ' ist vom Preisabgleich ausgeschlossen');
         }
         $groupId = $client && isset($client->groupid) ? (int) $client->groupid : 0;
         if ($mode === 'auto' && $source !== 'whmcs' && $groupId > 0 && $this->settings->bool('domainSkipClientGroups')
             && $this->hasGroupPricing($domain, $currency, $groupId)) {
-            $saveState($current);
-
-            return 'Kundengruppe mit eigenen TLD-Preisen übersprungen';
+            return $skipWith('Kundengruppe mit eigenen TLD-Preisen übersprungen');
         }
 
         $hasBaseline = isset($state['basis']) && $state['basis'] !== null && isset($state['basis_source']) && $state['basis_source'] === $basisSource;
@@ -385,23 +425,28 @@ class DomainPriceSync
         $detail = 'Verlängerung ' . $period . ' Jahr(e)';
 
         if ($mode === 'margin') {
-            if ($basis === null) {
-                return 'Kein Einkaufspreis für ' . $domain . ' ermittelbar';
+            if ($costForMargin === null) {
+                $this->notApplied = 'Kein Einkaufspreis für ' . $domain . ' ermittelbar';
+
+                return $this->notApplied;
             }
             $percent = isset($state['margin_percent']) && $state['margin_percent'] !== null ? (float) $state['margin_percent'] : 0.0;
             $fixed = isset($state['margin_fixed']) && $state['margin_fixed'] !== null ? (float) $state['margin_fixed'] : 0.0;
-            $yearly = $this->calculator->round(($basis * (1 + $percent / 100) + $fixed) * $factor);
+            $yearly = $this->calculator->round(($costForMargin * (1 + $percent / 100) + $fixed) * $factor);
             $target = round($yearly * $period + $addons, 2);
             $detail .= ', eigene Marge';
         } elseif ($source === 'whmcs') {
             $whmcs = $this->whmcsRenewPrice($domain, $currency, $period, $groupId);
             if ($whmcs === null) {
-                return 'Kein WHMCS-Preis für ' . $domain . ' ermittelbar';
+                $this->notApplied = 'Kein WHMCS-Preis für ' . $domain . ' ermittelbar';
+
+                return $this->notApplied;
             }
             $basis = $whmcs;
             $basisSource = 'whmcs';
             $hasBaseline = isset($state['basis']) && $state['basis'] !== null && isset($state['basis_source']) && $state['basis_source'] === 'whmcs';
-            $changed = $hasBaseline ? abs((float) $state['basis'] - $whmcs) >= 0.00005 : null;
+            $oldBasis = $hasBaseline ? (float) $state['basis'] : null;
+            $changed = $hasBaseline ? abs($oldBasis - $whmcs) >= 0.00005 : null;
             if (!($force || $trigger === 'always' || ($changed === null ? $this->settings->bool('domainSyncInitial') : $changed))) {
                 $saveState($current);
 
@@ -409,7 +454,9 @@ class DomainPriceSync
             }
             $target = round($whmcs + $addons, 2);
         } elseif ($basis === null) {
-            return 'Kein Einkaufspreis für ' . $domain . ' ermittelbar';
+            $this->notApplied = 'Kein Einkaufspreis für ' . $domain . ' ermittelbar';
+
+            return $this->notApplied;
         } elseif ($marginMode === 'calculate') {
             if (!($force || $trigger === 'always' || ($changed === null ? $this->settings->bool('domainSyncInitial') : $changed))) {
                 $saveState($current);
@@ -418,7 +465,9 @@ class DomainPriceSync
             }
             $yearly = $this->calculator->yearlyPrice($basis, 'domain', $currency);
             if ($yearly === null) {
-                return 'Kein Preis für ' . $domain . ' ermittelbar';
+                $this->notApplied = 'Kein Preis für ' . $domain . ' ermittelbar';
+
+                return $this->notApplied;
             }
             $target = round($yearly * $period + $addons, 2);
         } else {
@@ -439,20 +488,25 @@ class DomainPriceSync
         }
 
         if ($target === null || $target <= 0) {
-            return 'Kein Preis für ' . $domain . ' ermittelbar';
+            $this->notApplied = 'Kein Preis für ' . $domain . ' ermittelbar';
+
+            return $this->notApplied;
         }
         if (abs($target - $current) < 0.005) {
             $saveState($current);
 
             return 'unchanged';
         }
-        if (!$this->calculator->shouldApply($current, $target)) {
+        if ($mode !== 'margin' && !$this->calculator->shouldApply($current, $target)) {
+            if ($hasBaseline && $oldBasis !== null) {
+                $basis = $oldBasis;
+            }
             $saveState($current);
             $report->count('gefiltert');
+            $reason = 'Änderung von ' . Helper::formatAmount($current) . ' auf ' . Helper::formatAmount($target) . ' ' . $currency['code'] . ' durch die Preisregeln (Erhöhung/Senkung/Mindeständerung) blockiert';
+            $this->notApplied = $reason;
 
-            return $force
-                ? 'Änderung von ' . Helper::formatAmount($current) . ' auf ' . Helper::formatAmount($target) . ' ' . $currency['code'] . ' durch die Preisregeln (Erhöhung/Senkung/Mindeständerung) blockiert'
-                : 'unchanged';
+            return $force ? $reason : 'unchanged';
         }
 
         $update = ['recurringamount' => $target];
@@ -496,12 +550,20 @@ class DomainPriceSync
             return;
         }
         $this->products = [];
+        $duplicates = [];
         try {
             foreach (Helper::productList($this->api->call('GET', 'product/all', ['type' => 'domain'])) as $product) {
                 if (isset($product['type']) && strtolower((string) $product['type']) !== 'domain') {
                     continue;
                 }
-                $this->products[Helper::productDomain($product)] = $product;
+                $key = Helper::productDomain($product);
+                if (isset($this->products[$key])) {
+                    $duplicates[$key] = true;
+                }
+                $this->products[$key] = $product;
+            }
+            foreach (array_keys($duplicates) as $key) {
+                unset($this->products[$key]);
             }
         } catch (\Throwable $e) {
             $report->error('product/all: ' . $e->getMessage());

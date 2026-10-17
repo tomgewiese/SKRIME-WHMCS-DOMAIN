@@ -364,13 +364,48 @@ class Storage
         return (int) $query->count();
     }
 
-    public static function acknowledgeEvents($domainId)
+    public static function domainOpenEvents($domainId)
     {
         self::ensureSchema();
-        Capsule::table(self::TABLE_EVENTS)
+
+        return Capsule::table(self::TABLE_EVENTS)
             ->where('domain_id', (int) $domainId)
+            ->where('attention', 1)
             ->where('acknowledged', 0)
-            ->update(['acknowledged' => 1]);
+            ->orderBy('id', 'desc')
+            ->get();
+    }
+
+    public static function acknowledgeEvents($domainId, $maxId = null)
+    {
+        self::ensureSchema();
+        $query = Capsule::table(self::TABLE_EVENTS)
+            ->where('domain_id', (int) $domainId)
+            ->where('acknowledged', 0);
+        if ($maxId !== null) {
+            $query->where('id', '<=', (int) $maxId);
+        }
+        $query->update(['acknowledged' => 1]);
+    }
+
+    public static function acknowledgeOrphanEvents()
+    {
+        self::ensureSchema();
+        $active = Capsule::table('tbldomains')->where('registrar', Settings::MODULE)->pluck('id');
+        $ids = [];
+        foreach ($active as $id) {
+            $ids[(int) $id] = true;
+        }
+        $open = Capsule::table(self::TABLE_EVENTS)->where('acknowledged', 0)->where('domain_id', '>', 0)->pluck('domain_id');
+        $orphans = [];
+        foreach ($open as $domainId) {
+            if (!isset($ids[(int) $domainId])) {
+                $orphans[(int) $domainId] = true;
+            }
+        }
+        foreach (array_chunk(array_keys($orphans), 500) as $chunk) {
+            Capsule::table(self::TABLE_EVENTS)->whereIn('domain_id', $chunk)->where('acknowledged', 0)->update(['acknowledged' => 1]);
+        }
     }
 
     public static function log($type, $reference, $detail, $currency, $oldPrice, $newPrice, $oldCost = null, $newCost = null)
@@ -412,6 +447,11 @@ class Storage
         self::ensureSchema();
         $limit = date('Y-m-d H:i:s', time() - $days * 86400);
         Capsule::table(self::TABLE_LOG)->where('created_at', '<', $limit)->delete();
-        Capsule::table(self::TABLE_EVENTS)->where('created_at', '<', $limit)->delete();
+        Capsule::table(self::TABLE_EVENTS)
+            ->where('created_at', '<', $limit)
+            ->where(function ($query) {
+                $query->where('attention', 0)->orWhere('acknowledged', 1);
+            })
+            ->delete();
     }
 }

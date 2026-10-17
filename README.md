@@ -36,9 +36,9 @@ This module allows the integration of SKRIME's domain registration service into 
 - Replace the files in `/modules/registrars/skrime/` and copy `/includes/hooks/skrime.php`.
 - Open `System Settings` > `Domain Registrars` > `SKRIME` and save the configuration once so the new settings are stored.
 - Your API key is kept. The automatic syncs (TLD-Sync, Produkt-Sync) stay disabled until you enable them.
-- Active by default and configurable: the SKRIME DNS editor and DNSSEC in the client area, WHOIS privacy after ordering (only if ID protection was booked), premium domains shown as unavailable, company name cleaning on orders, the dashboard widget, the SKRIME fields in the admin domain tab.
-- Always active: transfer synchronisation and the status synchronisation (expired/cancelled/transferred).
-- SKRIME renews a domain by exactly 12 months per `product/renew` call. Multi-year registrations and renewals are booked as several renewals (one per additional year). This can be switched to "reject" in "Mehrjährige Laufzeiten". Transfers are always one year.
+- Active by default and configurable: the SKRIME DNS editor (for domains with DNS management) and DNSSEC in the client area, WHOIS privacy after ordering (only if ID protection was booked), premium domains shown as unavailable, company name cleaning on orders, the dashboard widget.
+- Always active: transfer synchronisation, the status synchronisation (expired/cancelled/transferred) and the SKRIME fields in the admin domain tab.
+- SKRIME renews a domain by exactly 12 months per `product/renew` call. Multi-year registrations and renewals are booked as several renewals (one per additional year). If one of them fails, the registration still counts as successful and a notice is created; a failed renewal can simply be retried and only books the missing years. This can be switched to "reject" in "Mehrjährige Laufzeiten". Transfers are always one year.
 
 ## Features
 
@@ -47,7 +47,7 @@ This module allows the integration of SKRIME's domain registration service into 
 - **Multi-year terms:** Booked as one `product/renew` call per additional year (12 months each) or rejected (configurable).
 - **Nameserver Management:** Read and update nameservers.
 - **Contact Management:** Read and update the registrant contact (house number handling included).
-- **DNS Management:** Own SKRIME DNS editor in the client area with all SKRIME record types (A, AAAA, CNAME, ALIAS, MX, SRV, TXT, CAA, PTR, TLSA, DS, DNSKEY). The WHMCS DNS page redirects to it. Alternatively the WHMCS standard page can be used; types SKRIME does not support (URL, FRAME, MXE) are then hidden.
+- **DNS Management:** Own SKRIME DNS editor in the client area with all SKRIME record types (A, AAAA, CNAME, ALIAS, MX, SRV, TXT, CAA, PTR, TLSA, DS, DNSKEY), by default only for domains with the DNS management addon. The WHMCS DNS page redirects to it. The editor only saves when the zone was loaded and has not been changed in the meantime. Alternatively the WHMCS standard page can be used; types SKRIME does not support (URL, FRAME, MXE) are then hidden.
 - **DNSSEC:** Clients can enable, change and disable DNSSEC (DNSKEY) in the client area.
 - **WHOIS Privacy:** ID protection toggles the SKRIME WHOIS privacy. Optionally enabled directly after registration/transfer.
 - **EPP Code:** Retrieve the auth code.
@@ -113,14 +113,16 @@ Price mode per domain (admin domain tab, "SKRIME Preis-Modus"):
 
 - **Automatisch:** Follows the module settings.
 - **Fester Preis:** The recurring amount set in WHMCS is never changed. A purchase price change is reported as a notice.
-- **Eigene Marge:** Purchase price + own percentage + own fixed amount (EUR), rounded like all prices. Applied immediately when saved and on every sync.
+- **Eigene Marge:** Purchase price of the product + own percentage + own fixed amount (EUR), rounded like all prices. Applied immediately when saved and on every sync, independent of the price source, the currency setting, "Verkaufspreise anpassen" and the increase/decrease rules. Invalid input is not saved and shown as a notice.
 
 Further options:
 
 - Price source: SKRIME product (recommended), product with fallback to the pricelist, pricelist, or WHMCS TLD renewal price.
 - Domain addons (DNS management, email forwarding, ID protection) stay part of the recurring amount.
 - Domains with promotion codes, free domains, premium domains, domains set to "do not renew" and clients whose client group has its own TLD pricing are skipped in automatic mode (configurable).
-- Price increases, price decreases and a minimum change in percent can be limited.
+- Price increases, price decreases and a minimum change in percent can be limited. A blocked change is shown as a notice and stays pending, so it is applied later in full when the rules allow it.
+- Every purchase price change that did not lead to a new selling price (fixed price, skipped domain, blocked change, other price source) or that results in a negative margin is shown as a notice.
+- Open notices of deleted domains or domains moved to another registrar are closed automatically; open notices are never removed by the log retention.
 - Optional client notification via a domain email template. Merge fields: `{$skrime_old_price}`, `{$skrime_new_price}`, `{$skrime_currency}`.
 - If the SKRIME API is unreachable the batch stops and continues with the next cron run.
 
@@ -151,6 +153,7 @@ All price changes are written to `mod_skrime_price_log`, all product changes to 
 | WHOIS-Privacy bei Bestellung / Felder | WHOIS privacy after ordering and the fields to hide |
 | Sync: Fehlende Domains kündigen | Mark domains missing at SKRIME as cancelled |
 | DNS: Editor im Kundenbereich | SKRIME DNS editor (all SKRIME types) or WHMCS standard page with unsupported types hidden |
+| DNS: Editor nur mit DNS-Management | Show the SKRIME DNS editor only for domains with the DNS management addon |
 | DNS: MX/SRV-Priorität | Send the priority inside the data field or as separate field |
 | DNS: Erweiterte Records schützen | WHMCS standard page only: hide and preserve records WHMCS cannot display |
 | DNSSEC im Kundenbereich | Enable the DNSSEC page for clients |

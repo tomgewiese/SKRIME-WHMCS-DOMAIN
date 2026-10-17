@@ -7,10 +7,11 @@
     <div class="alert alert-danger">{$errorMessage|escape}</div>
 {/if}
 
-{if $enabled}
+{if $enabled && $loaded}
     <form method="post" action="clientarea.php?action=domaindetails&amp;id={$domainid}&amp;modop=custom&amp;a=dnszone">
         <input type="hidden" name="token" value="{$token}" />
         <input type="hidden" name="skrime_action" value="savezone" />
+        <input type="hidden" name="zone_hash" value="{$zoneHash|escape}" />
         <div class="table-responsive">
             <table class="table table-striped table-sm table-condensed">
                 <thead>
@@ -57,6 +58,7 @@
                 </tbody>
             </table>
         </div>
+        <input type="hidden" name="dns_complete" value="1" />
         <button type="submit" class="btn btn-primary">Zone speichern</button>
         <a href="clientarea.php?action=domaindetails&amp;id={$domainid}" class="btn btn-default btn-secondary">Zurück</a>
     </form>

@@ -181,6 +181,12 @@ class Settings
                 'Default' => 'skrime',
                 'Description' => 'Der SKRIME DNS-Editor unterstützt A, AAAA, CNAME, ALIAS, MX, SRV, TXT, CAA, PTR, TLSA, DS und DNSKEY. Die WHMCS-DNS-Seite leitet dann auf den Editor weiter',
             ],
+            'dnsEditorRequireAddon' => [
+                'FriendlyName' => 'DNS: Editor nur mit DNS-Management',
+                'Type' => 'yesno',
+                'Default' => 'on',
+                'Description' => 'SKRIME DNS-Editor nur für Domains mit gebuchtem DNS-Management-Addon anzeigen',
+            ],
             'dnssecClientArea' => [
                 'FriendlyName' => 'DNSSEC im Kundenbereich',
                 'Type' => 'yesno',
@@ -267,7 +273,7 @@ class Settings
                 'Type' => 'dropdown',
                 'Options' => $years,
                 'Default' => '10',
-                'Description' => 'Preise bis zu dieser Laufzeit pflegen, längere Laufzeiten werden deaktiviert. Mehr als 1 Jahr nur mit "Weitere Jahre per Verlängerung buchen"',
+                'Description' => 'Preise bis zu dieser Laufzeit pflegen, längere Laufzeiten werden deaktiviert. Bei "Mehrjährige Laufzeiten: Ablehnen" gilt immer 1 Jahr',
             ],
             'tldEnableYears' => [
                 'FriendlyName' => 'TLD-Sync: Deaktivierte Laufzeiten aktivieren',
@@ -401,7 +407,7 @@ class Settings
                 'FriendlyName' => 'Produkt-Sync: Verkaufspreise anpassen',
                 'Type' => 'yesno',
                 'Default' => 'on',
-                'Description' => 'Ändert sich der Einkaufspreis eines Produkts, wird der Verlängerungspreis der Domain angepasst. Ohne Haken wird die Änderung nur gemeldet. Domains mit Preis-Modus "Fester Preis" werden nie geändert',
+                'Description' => 'Ändert sich der Einkaufspreis eines Produkts, wird der Verlängerungspreis der Domain angepasst. Ohne Haken wird die Änderung nur gemeldet. Domains mit Preis-Modus "Fester Preis" werden nie geändert, Domains mit "Eigene Marge" immer'
             ],
             'domainMarginMode' => [
                 'FriendlyName' => 'Produkt-Sync: Marge',
@@ -437,13 +443,13 @@ class Settings
                 'Type' => 'dropdown',
                 'Options' => $trigger,
                 'Default' => 'change',
-                'Description' => '',
+                'Description' => 'Nur bei Marge "Neu berechnen" oder Einkaufspreis "WHMCS-TLD-Verlängerungspreis". Bei "Bisherige Marge beibehalten" und "Eigene Marge" ohne Wirkung',
             ],
             'domainSyncInitial' => [
                 'FriendlyName' => 'Produkt-Sync: Beim ersten Lauf anwenden',
                 'Type' => 'yesno',
                 'Default' => '',
-                'Description' => 'Nur bei Marge "Neu berechnen": Preise beim ersten Abgleich sofort berechnen. Ohne Haken wird zuerst nur der aktuelle Einkaufspreis gespeichert',
+                'Description' => 'Nur bei Marge "Neu berechnen" oder Einkaufspreis "WHMCS-TLD-Verlängerungspreis": Preise beim ersten Abgleich sofort setzen. Ohne Haken wird zuerst nur der aktuelle Einkaufspreis gespeichert',
             ],
             'domainSyncInterval' => [
                 'FriendlyName' => 'Produkt-Sync: Intervall',
@@ -581,6 +587,11 @@ class Settings
             ],
             self::definitions()
         );
+    }
+
+    public function maxYears()
+    {
+        return $this->choice('multiYearMode') === 'renew' ? $this->int('tldMaxYears', 1, 10) : 1;
     }
 
     public function all()

@@ -102,7 +102,7 @@ class TldPriceSync
             && $defaultCurrency
             && $currencies->isTarget($defaultCurrency['id'])
             && Capsule::schema()->hasColumn('tbldomainpricing', 'redemption_grace_period_fee');
-        $multiYear = $this->settings->int('tldMaxYears', 1, 10) > 1;
+        $multiYear = $this->settings->maxYears() > 1;
 
         foreach ($pricelist as $tld => $entry) {
             if (!empty($include) && !in_array($tld, $include, true)) {
@@ -203,7 +203,7 @@ class TldPriceSync
     private function applyType($relid, $tld, $type, $cost, $renewCost, array $logCosts, array $targets, Report $report)
     {
         $priceType = self::PRICE_TYPES[$type];
-        $maxYears = $type === 'transfer' ? 1 : $this->settings->int('tldMaxYears', 1, 10);
+        $maxYears = $type === 'transfer' ? 1 : $this->settings->maxYears();
         $enableYears = $this->settings->bool('tldEnableYears');
         list($oldCost, $newCost) = $logCosts;
 

@@ -52,6 +52,7 @@ class Cron
                 $domainSync->runBatch(false);
             }
 
+            Storage::acknowledgeOrphanEvents();
             Notifier::sendDigest($settings);
 
             if (Storage::isDue('log_pruned', 24)) {
